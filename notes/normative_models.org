@@ -1,0 +1,70 @@
+#+TITLE: Normative models of change detection 
+#+AUTHOR: Tim Sit
+#+DATE: \today
+#+startup: beamer
+#+LaTeX_CLASS: beamer
+#+LaTeX_CLASS_OPTIONS: [presentation]
+#+OPTIONS: H:2 toc:t num:t
+#+BEAMER_FRAME_LEVEL: 2
+#+COLUMNS: %40ITEM %10BEAMER_env(Env) %9BEAMER_envargs(Env Args) %4BEAMER_col(Col) %10BEAMER_extra(Extra)
+#+latex_header: \AtBeginSection[]{\begin{frame}<beamer>\frametitle{Topic}\tableofcontents[currentsection]\end{frame}}
+#+LATEX_HEADER: \setbeamertemplate{caption}[numbered]
+#+LATEX_HEADER: \usepackage{caption}
+#+LATEX_HEADER: \captionsetup{font=scriptsize,labelfont=scriptsize}
+
+* Overview 
+
+** Change detection 
+
+** Types of change detection 
+
+Offline: 
+
+ - you have the entire dataset in your hands
+
+Online: 
+
+ - you receive new data over time 
+ - often further divided into 
+     - batch detection: detect changes in batches of incoming data
+     - sequential detection: detect changes with each new data point
+
+** Types of models for change detection 
+
+*** Non-bayesian methods :BMCOL:
+    :PROPERTIES:
+    :BEAMER_col: 0.5
+    :END:
+
+Frequentist methods 
+
+ - Changepoint model (Hawkins, Qiu, Kang 2003)
+
+*** Bayesian methods :BMCOL:
+    :PROPERTIES:
+    :BEAMER_col: 0.5
+    :END:
+
+Bayesian methods
+
+ - Bayesian online changepoint detection (Adams and Mackay 2007)
+ - Adaptive Sequential Bayesian Change Point Detection (Turner, Saatci, Rasmussen 2009)
+
+* Bayesian online changepoint detection (Adams and Mackay 2007)
+
+** Model overview 
+
+** The harzard function
+
+** Developments 
+
+ - Bayesian On-line learning of the Hazard rate in change-point problems (Wilson, Nassar, Gold 2010)
+
+
+* Examples 
+
+** Bayesian online change point detection (Adams and Mackay 2007)
+
+#+ATTR_LATEX: :width 0.55 \textwidth 
+#+CAPTION: Single change point, two Gaussians with different means but equal variance
+file:///home/timothysit/Dropbox/notes/Projects/second_rotation_project/normative_model/figures/test.png
