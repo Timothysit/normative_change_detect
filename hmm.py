@@ -4,8 +4,8 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 import os
 
-
-def sim_data(u_1, u_2, sigma, tau, n, update_interval, dist="log_normal"):
+def sim_data(u_1, u_2, sigma, tau, n, update_interval, dist="log_normal",
+             nosie_mean=None, noise_sigma=None):
     """
     simulates time series data with some a change in mean after a certain time t
     :param u_1: mean from the first data point up to the change point
@@ -29,7 +29,7 @@ def sim_data(u_1, u_2, sigma, tau, n, update_interval, dist="log_normal"):
         signal_1 = np.random.normal(loc=u_1, scale=sigma, size=int(tau / update_interval))
         signal_2 = np.random.normal(loc=u_2, scale=sigma, size=int((n-tau) / update_interval))
     else:
-        print("No valid conditions specified")
+        print("No valid distributions specified")
 
     if update_interval > 1:
         signal_1 = np.repeat(signal_1, update_interval)
@@ -101,6 +101,56 @@ def fit_model(model, signal, fit_model_to_data=True, tau=None, savepath=None):
 
     plt.show()
 
+def random_choice(lick_bias=0.5):
+    """
+    :param: lick_bias | the probability of licking
+    :param dist:
+    :return:
+    """
+
+    uniform_random = np.random_random():
+    if uniform_random < lick_bias:
+        lick_choice = 1.0
+    else:
+        lick_choice = 0.0
+
+    return lick_choice
+
+
+
+def posterior_to_decision(p_state, policy=["softmax", "epsilon_greedy"], values=[1, 1, 1, 1], epsilon=0.1):
+   """
+   Given the estimated posterior probability of being in the change state,
+   output the decision made.
+
+   :param: p_state | probability of being in the change state given observations (from 1:t)
+   :param: values | array of 4 values, associated with the *magnitudes* of
+                    1. the value of true positive 2. the value of true negative
+                    3. the value of false positive 4. the value of false negative
+            if None, then these are not taken into account when making the decision.
+   :return: lick_choice | if 0, then no lick, if 1, then lick
+   """
+
+
+    lick_benefit = p_state * values[0]
+    lick_cost = (1-p_state) * values[2]
+    lick_val = lick_benefit - lick_cost
+
+    no_lick_benefit = (1-p_state) * values[1]
+    no_lick_cost = p_state * values[3]
+    no_lick_val = no_lick_benefit - no_lick_cost
+
+    lick_choice = np.array((lick_val > no_lick_val)).astype(float)
+
+    if "epsilon_greedy" in policy:
+        uniform_random = np.random.random() # uniform random from 0 to 1
+        if uniform_random < epsilon:
+            lick_choice = random_choice(lick_bias=0.5)
+
+
+    return lick_choice
+
+
 
 
 
@@ -129,6 +179,8 @@ figfolder = "/home/timothysit/Dropbox/notes/Projects/second_rotation_project/nor
 figname = "gaussian_HMM_test_1.png"
 fit_model(model, signal, fit_model_to_data=False, tau=tau,
           savepath=os.path.join(figfolder, figname))
+
+
 
 
 
