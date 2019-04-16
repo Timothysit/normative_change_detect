@@ -3,6 +3,11 @@ from autograd import grad
 import hmm # functions to simulate data
 import matplotlib.pyplot as plt
 import scipy.io
+from tqdm import tqdm
+
+import os
+import pickle as pkl
+import pandas as pd
 
 def cal_p_x_given_z1(x_k):
     # calculates the probability of the obv. given the baseline state
@@ -124,7 +129,8 @@ def apply_strategy(prob_lick, k):
 
     return prob_lick
 
-def loss_function(actual_lick, param_vals, signals):
+def loss_function(param_vals):
+    # missing arguments: signals, param_vals_, actual_lick_,
     """
     loss between predicted licks and actual licks
     computed using cross entropy
@@ -132,17 +138,17 @@ def loss_function(actual_lick, param_vals, signals):
     :return:
     """
 
-    prob_lick = np.zeros((len(signals)))
+    cross_entropy_loss = 0
+    epsilon = 0.001  # small value to avoid taking the log of 0
     for x_num, x in enumerate(signals):
         posterior = forward_inference(x.flatten())
         p_lick = apply_cost_benefit(change_posterior=posterior[:, 1], true_negative=1.0, false_negative=1.0, false_positive=1.0)
         p_lick = apply_strategy(p_lick, k=param_vals[0])
-        prob_lick[x_num] = np.max(p_lick)
+        p_lick = np.max(p_lick)
+        cross_entropy_loss += -(actual_lick[x_num] * np.log(p_lick + epsilon) + (1 - actual_lick[x_num]) * np.log(
+            1 - p_lick + epsilon))
 
-
-    cross_entropy_loss = -(actual_lick * np.log(prob_lick) + (1 - actual_lick) * np.log(1 - prob_lick))
-
-    return np.sum(cross_entropy_loss)
+    return cross_entropy_loss
 
 
 # Test forward algorithm
@@ -199,19 +205,95 @@ def test_on_data(change_val=1.0):
 
     return None
 
-def run_through_entire_dataset():
+
+def posterior_to_decision(posterior, return_prob=True):
+    change_posterior = posterior[:, 1] # p(z_2 | x_{1:k})
+    p_lick = apply_cost_benefit(change_posterior, true_positive=1.0, true_negative=1.0,
+                                false_negative=1.0, false_positive=1.0)
+    p_lick = apply_strategy(p_lick, k=1.0)
+
+    if return_prob is True:
+        return np.max(p_lick)
+
+
+def run_through_entire_dataset(datapath, savepath, subset_criteria=["abort"], numtrial=100):
+    # note this will also include experimental data, so perhaps "model_behaviour" is not the best variable name...
     # runs forward algorithm through entire dataset
-    pass
+    exp_data = scipy.io.loadmat(datapath)
+
+    signals = exp_data["ys"].flatten()
+    change = np.exp(exp_data["sig"].flatten())
+    tau = exp_data["change"].flatten()
+
+    # Experimental data
+    mouse_hit = (exp_data["outcome"] == "Hit").astype(float).flatten()
+    mouse_FA = (exp_data["outcome"] == "FA").astype(float).flatten()
+    mouse_lick = np.any([mouse_hit, mouse_FA], axis=0).astype(float).flatten()
+
+    if "abort" in subset_criteria:
+        no_abort_index = np.where(exp_data["outcome"].flatten() != "abort")[0]
+        signals = signals[no_abort_index]
+        change = change[no_abort_index]
+        tau = tau[no_abort_index]
+
+    decision = list()
+    decision_time = list()
+    lick_choice_list = list()
+
+    for signal in tqdm(signals[0:numtrial]):
+        signal = signal.reshape(-1, 1)
+
+        posterior = forward_inference(signal)
+
+        lick_choice = posterior_to_decision(posterior, return_prob=True)
+
+        # save data
+        decision.append(np.max(lick_choice)) # 0 = no lick, 1 = lick
+
+        """
+        if np.max(lick_choice) == 1:
+            decision_time.append(np.where(lick_choice == 1)[0][0]) # only use first lick (subsequent licks don't count)
+        else:
+            decision_time.append(np.nan)
+        """
+
+        # lick_choice_list.append(lick_choice)
+
+    # TODO: Deal with abort subset criteria below (lengths not equal)
+
+    # model_response = dict()
+    # model_response["decision"] = decision
+    # model_response["decision_time"] = decision_time
 
 
-def simple_gradient_descent():
+    # save the behaviour
+    model_behaviour = dict()
+    model_behaviour["change"] = change[0:numtrial]
+    model_behaviour["decision"] = decision
+    model_behaviour["tau"] = tau[0:numtrial]
+    model_behaviour["mouse_lick"] = mouse_lick[0:numtrial]
+
+    # model_behaviour["lick_choice_list"] = lick_choice_list
+
+    # Convert from dictionary to dataframe
+    model_behaviour_df = pd.DataFrame.from_dict(model_behaviour)
+
+
+    with open(savepath, "wb") as handle:
+        pkl.dump(model_behaviour_df, handle)
+
+
+def simple_gradient_descent(num_epoch=100):
     # Define targets (actual licks)
     exp_data_file = "/media/timothysit/180C-2DDD/second_rotation_project/exp_data/data/data_IO_083.mat"
     exp_data = scipy.io.loadmat(exp_data_file)
 
 
     reaction_time = exp_data["rt"]
-    mouse_lick = (exp_data["outcome"] == "Hit").astype(float).flatten()
+    mouse_hit = (exp_data["outcome"] == "Hit").astype(float).flatten()
+    mouse_FA = (exp_data["outcome"] == "FA").astype(float).flatten()
+    mouse_lick = np.any([mouse_hit, mouse_FA], axis=0).astype(float).flatten()
+
     signal = exp_data["ys"].flatten()
 
     # subset trials
@@ -230,23 +312,107 @@ def simple_gradient_descent():
     loss_function_grad = grad(loss_function)
     param_vals = np.array([1.0])
 
-    loss_value = loss_function(actual_lick=mouse_lick, signals=signal, param_vals=param_vals)
+    # Define global variables used by loss_function
+    global actual_lick
+    global signals
+    actual_lick = mouse_lick
+    signals = signal
+
+
+    # loss_value = loss_function(actual_lick=mouse_lick, signals=signal, param_vals=param_vals)
 
     learning_rate = 0.01
 
-    print("Initial loss:", loss_function_grad(actual_lick=mouse_lick, signals=signal, param_vals=param_vals))
-    for i in range(100):
-        param_vals -= loss_function_grad(actual_lick=mouse_lick, signals=signal, param_vals=param_vals) * learning_rate
+    print("Initial loss:", loss_function_grad(param_vals))
 
-    print("Trained loss:", loss_function_grad(actual_lick=mouse_lick, signals=signal, param_vals=param_vals))
+    loss_val_list = list()
+    num_param = 1
+    param_val_array = np.zeros((num_epoch, num_param))
+    for i in tqdm(range(num_epoch)):
+        loss_val_list.append(loss_function_grad(param_vals))
+        param_val_array[i, :] = param_vals
+        param_vals -= loss_function_grad(param_vals) * learning_rate
+
+    print("Trained loss:", loss_function_grad(param_vals))
+
+    training_result = dict()
+    training_result["loss"] = loss_val_list
+    training_result["param_val"] = param_val_array
+
+    training_savepath = "/media/timothysit/180C-2DDD/second_rotation_project/hmm_data/training_result.pkl"
+
+    with open(training_savepath, "wb") as handle:
+        pkl.dump(training_result, handle)
+
+
+def plot_training_result(training_savepath):
+
+    with open(training_savepath, "rb") as handle:
+        training_result = pkl.load(handle)
+
+    loss = np.concatenate(training_result["loss"])
+    param_val = np.concatenate(training_result["param_val"])
+
+    fig, axs = plt.subplots(2, 1, figsize=(8, 8))
+
+    axs[0].plot(np.arange(1, len(loss)+1), -loss)
+    axs[1].plot(np.arange(1, len(loss)+1), param_val)
+
+    axs[0].set_ylabel("Loss")
+    axs[1].set_ylabel("Parameter value")
+
+    plt.show()
+
+
+def compare_model_with_behaviour(model_behaviour_df_path, savepath=None, showfig=True):
+    model_behaviour_df = pd.read_pickle(model_behaviour_df_path)
+
+    # plot psychometric curve
+
+    model_prop_choice = model_behaviour_df.groupby(["change"], as_index=False).agg({"decision": "mean"})
+    mouse_prop_choice = model_behaviour_df.groupby(["change"], as_index=False).agg({"mouse_lick": "mean"})
+
+    fig, ax = plt.subplots(figsize=(8, 6))
+
+    # Plot model behaviour
+    ax.plot(model_prop_choice.change, model_prop_choice.decision)
+    ax.scatter(model_prop_choice.change, model_prop_choice.decision)
+
+    # Plot mouse behaviour
+    ax.plot(mouse_prop_choice.change, mouse_prop_choice.mouse_lick)
+    ax.scatter(mouse_prop_choice.change, mouse_prop_choice.mouse_lick)
+
+    ax.legend(["Model", "Mouse"], frameon=False)
+
+
+    ax.set_ylim([-0.05, 1.05])
+
+    ax.set_xlabel("Change magnitude")
+    ax.set_ylabel("P(lick)")
+
+    ax.spines["right"].set_visible(False)
+    ax.spines["top"].set_visible(False)
+
+    if savepath is not None:
+        plt.savefig(savepath, dpi=300)
+
+    if showfig is True:
+        plt.show()
+
+
 
 
 def main():
+    datapath = "/media/timothysit/180C-2DDD/second_rotation_project/exp_data/data/data_IO_083.mat"
+    training_savepath = "/media/timothysit/180C-2DDD/second_rotation_project/hmm_data/training_result.pkl"
+    model_save_path = "/media/timothysit/180C-2DDD/second_rotation_project/hmm_data/model_response_083_4.pkl"
+
     # test_forward_algorithm()
     # test_on_data(change_val=2.0)
-    simple_gradient_descent()
-
-
+    # simple_gradient_descent()
+    # plot_training_result(training_savepath)
+    run_through_entire_dataset(datapath=datapath, subset_criteria=["abort"], savepath=model_save_path, numtrial=100)
+    compare_model_with_behaviour(model_behaviour_df_path=model_save_path, savepath=None, showfig=True)
 
 if __name__ == "__main__":
     main()
