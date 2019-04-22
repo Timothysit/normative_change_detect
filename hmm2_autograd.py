@@ -6,6 +6,7 @@ from autograd.misc.optimizers import adam
 # Other things
 import hmm  # functions to simulate data
 import matplotlib.pyplot as plt
+from mpl_toolkits.mplot3d import Axes3D
 import scipy.io
 from tqdm import tqdm
 
@@ -654,11 +655,156 @@ def compare_model_with_behaviour(model_behaviour_df_path, savepath=None, showfig
         plt.show()
 
 
+def run_through_dataset_fit_vector(datapath, savepath, param):
+    """
+    Takes in the experimental data, and makes inference of p(lick) for each time point given the stimuli
+    :param datapath:
+    :param savepath:
+    :param param:
+    :return:
+    """
+
+    with open(datapath, "rb") as handle:
+        exp_data = pkl.load(handle)
+
+    signals = exp_data["ys"].flatten()
+    # mouse_rt = exp_data["rt"].flatten()
+    change = np.exp(exp_data["sig"].flatten())
+    tau = exp_data["change"].flatten()
+    absolute_decision_time = exp_data["rt"].flatten()
+    # peri_stimulus_rt = absolute_decision_time - tau
+
+    # Experimental data
+    # mouse_hit = (exp_data["outcome"] == "Hit").astype(float).flatten()
+    # mouse_FA = (exp_data["outcome"] == "FA").astype(float).flatten()
+    # mouse_lick = np.any([mouse_hit, mouse_FA], axis=0).astype(float).flatten()
+
+    lick_choice_vector = list()
+
+    for signal in tqdm(signals):
+        signal = signal.reshape(-1, 1)
+
+        posterior = forward_inference(signal.flatten())
+
+        lick_choice = posterior_to_decision(posterior, return_prob=True, k=param[0], false_negative=param[1],
+                                            midpoint=param[2])
+
+        lick_choice_vector.append(lick_choice)
+
+    # TODO: Add time shift
+
+    vec_dict = dict()
+    vec_dict["rt"] = absolute_decision_time
+    vec_dict["model_vec_output"] = lick_choice_vector
+    vec_dict["true_change_time"] = tau
+
+    with open(savepath, "wb") as handle:
+        pkl.dump(vec_dict, handle)
+
+
+
+def plot_fit_vector_performance(model_save_path, figsavepath=None):
+
+    with open(model_save_path, "rb") as handle:
+        model_response = pkl.load(handle)
+
+    mouse_rt = model_response["rt"]
+    model_prediction = model_response["model_vec_output"]
+    true_change_time = model_response["true_change_time"]
+
+    # Align with mouse lick
+    fig, ax = plt.subplots(figsize=(8, 6))
+    window_width = 100
+    for trial, rt in enumerate(mouse_rt):
+        if not np.isnan(rt):
+            start_time = int(rt - window_width/2)
+            end_time = int(rt + window_width/2)
+            trace = model_prediction[trial][start_time:end_time]
+            ax.plot(np.arange(0, len(trace)) - window_width/2,
+                    trace, alpha=0.1, color="blue")
+
+        ax.axvline(0, linestyle="--", color="green")
+
+    ax.set_ylabel("P(lick)")
+    ax.set_xlabel("Peri-lick time (frames)")
+    ax.spines["right"].set_visible(False)
+    ax.spines["top"].set_visible(False)
+
+    if figsavepath is not None:
+        plt.savefig(figsavepath)
+
+    plt.show()
+
+    # Align with actual change time
+    fig, ax = plt.subplots(figsize=(8, 6))
+    window_width = 50
+    for trial, rt in enumerate(true_change_time):
+        if not np.isnan(rt):
+            start_time = int(rt - window_width/2)
+            end_time = int(rt + window_width/2)
+            trace = model_prediction[trial][start_time:end_time]
+            ax.plot(np.arange(0, len(trace)) - window_width/2,
+                    trace, alpha=0.1, color="blue")
+
+        ax.axvline(0, linestyle="--", color="green")
+
+    plt.show()
+
+
+    # Test out 3D plot
+    fig = plt.figure()
+    ax = fig.add_subplot(111, projection='3d')
+
+    # re-order mouse_rt and model_prediction
+    time_to_rise_list = list()
+    threshold = 0.7
+    for p_lick_vec in model_prediction:
+        time_to_rise = np.where(p_lick_vec > threshold)[0]
+        if len(time_to_rise) == 0:
+            time_to_rise_list.append(0)
+        else:
+            time_to_rise_list.append(time_to_rise[0])
+    # new_sort_list = np.array(sorted(time_to_rise_list))
+    new_sort_index = np.argsort(time_to_rise_list)
+
+
+    window_width = 100
+    """
+    for trial, rt in enumerate(mouse_rt):
+        if not np.isnan(rt):
+            start_time = int(rt - window_width/2)
+            end_time = int(rt + window_width/2)
+            trace = model_prediction[trial][start_time:end_time]
+            ax.plot(xs=np.arange(0, len(trace)) - window_width/2,
+                    zs=trace, ys=np.repeat(trial, len(trace)), alpha=0.1, color="blue")
+
+        # ax.axvline(0, linestyle="--", color="green")
+    """
+    # new loop using sorted index
+    num_trace = 0
+    for trial, index in enumerate(new_sort_index):
+        rt = mouse_rt[index]
+        model_vec = model_prediction[index]
+        if not np.isnan(rt):
+            start_time = int(rt - window_width/2)
+            end_time = int(rt + window_width/2)
+            trace = model_vec[start_time:end_time]
+            ax.plot(xs=np.arange(0, len(trace)) - window_width/2,
+                    zs=trace, ys=np.repeat(trial, len(trace)), alpha=0.1, color="blue")
+            num_trace = num_trace + 1
+
+    print(num_trace)
+    plt.show()
+
+
+
+
 def main():
     datapath = "/media/timothysit/180C-2DDD/second_rotation_project/exp_data/subsetted_data/data_IO_083.pkl"
     model_save_path = "/media/timothysit/180C-2DDD/second_rotation_project/hmm_data/model_response_083_16.pkl"
-    fig_save_path = "/media/timothysit/180C-2DDD/second_rotation_project/figures/model_response_083_16.png"
+    fig_save_path = "/media/timothysit/180C-2DDD/second_rotation_project/figures/model_response_083_17.png"
     training_savepath = "/media/timothysit/180C-2DDD/second_rotation_project/hmm_data/training_result_083_17.pkl"
+    vec_save_path = "/media/timothysit/180C-2DDD/second_rotation_project/hmm_data/model_response_083_17.pkl"
 
     """
     param: 
@@ -672,15 +818,15 @@ def main():
     # simple_gradient_descent(datapath, num_epoch=100, param_vals=np.array([9.59, 0.27, 0.37]),
     #                         training_savepath=training_savepath)
 
-    gradient_descent_fit_vector(datapath, training_savepath, init_param_vals=np.array([10.0, 0.0, 0.5]),
-                                time_shift_list=np.arange(0, 5), num_epoch=10)
+    # gradient_descent_fit_vector(datapath, training_savepath, init_param_vals=np.array([10.0, 0.0, 0.5]),
+    #                             time_shift_list=np.arange(0, 5), num_epoch=10)
 
     # plot_training_result(training_savepath)
     # run_through_entire_dataset(datapath=datapath, savepath=model_save_path, param=[9.23, 0.67, 0.03], numtrial=None)
     # compare_model_with_behaviour(model_behaviour_df_path=model_save_path, savepath=fig_save_path, showfig=True)
 
-
-
+    # run_through_dataset_fit_vector(datapath=datapath, savepath=vec_save_path, param=[10.0, 0.0, 0.5])
+    plot_fit_vector_performance(vec_save_path, fig_save_path)
 
 if __name__ == "__main__":
     main()
