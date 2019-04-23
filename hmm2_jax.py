@@ -5,6 +5,8 @@ import numpy as onp # original numpy for indexed assignment/mutation (outside co
 from jax import grad, jit, vmap
 from jax.experimental import optimizers
 
+from jax import device_put  # onp operations not transferred to GPU, so they should run faster
+
 # Other things
 import hmm  # functions to simulate data
 import matplotlib.pyplot as plt
@@ -15,32 +17,10 @@ import itertools
 import os
 import pickle as pkl
 import pandas as pd
+# from os.path import expanduser
+# home = expanduser("~")
+home = "/home/timsit"
 
-
-def cal_p_x_given_z1(x_k):
-    # calculates the probability of the obv. given the baseline state
-    z1_mu = np.log(1.0)
-    z1_var = 0.25  # sigma^2
-
-    p_x_given_z1 = (1 / np.sqrt(2 * np.pi * z1_var)) * np.exp(-(x_k - z1_mu) ** 2 / (2 * z1_var))
-
-    return p_x_given_z1
-
-
-def cal_p_x_given_z2(x_k):
-    # calcaultes the probability of the obv. given the change state
-    z2_mu = np.log(np.array([1.25, 1.35, 1.50, 2.00, 4.00]))
-    z2_var = np.array([0.25, 0.25, 0.25, 0.25, 0.25])
-    z2_weights = np.array([0.2, 0.2, 0.2, 0.2, 0.2])
-
-    # z2_mu = 1.0
-    # z2_var = 0.25
-
-    p_x_given_z2 = (1 / np.sqrt(2 * np.pi * z2_var)) * np.exp(-(x_k - z2_mu) ** 2 / (2 * z2_var))
-    # p_x_given_z2 = np.dot(p_x_given_z2, z2_weights)
-    p_x_given_z2 = np.max(p_x_given_z2)
-
-    return p_x_given_z2
 
 def cal_p_x_given_z(x_k):
     z_mu = np.log(np.array([1.0, 1.25, 1.35, 1.50, 2.00, 4.00]))
@@ -53,19 +33,6 @@ def cal_p_x_given_z(x_k):
 
     # returns row vector (for simpler calculation later on)
     return p_x_given_z.T
-
-def cal_p_x_given_zchange(x_k, z_n):
-    zchange_mu_list = np.log(np.array([1.25, 1.35, 1.50, 2.00, 4.00]))
-    zchange_var_list = np.array([0.25, 0.25, 0.25, 0.25, 0.25])
-
-    zchange_mu = zchange_mu_list[z_n]
-    zchange_var = zchange_var_list[z_n]
-
-    p_x_given_zchange = (1 / np.sqrt(2 * np.pi * zchange_var)) * np.exp(-(x_k - zchange_mu) ** 2 / (2 * zchange_var))
-
-    # returns row vector
-    return p_x_given_zchange.T
-
 
 
 def forward_inference(x):
@@ -97,6 +64,9 @@ def forward_inference(x):
 
     # Initial probabilities
     p_z_and_x = cal_p_x_given_z(x_k=x[0]) * init_state_probability
+
+    # add the initial probability to the output list
+    p_change_given_x.append(0)
 
 
     # Loop through the rest of the samples to compute P(x_k, z_k) for each
@@ -143,7 +113,7 @@ def apply_strategy(prob_lick, k, midpoint=0.5):
     # prob_lick = y = a * 1 / (1 + np.exp(-k * (x - x0))) + b
 
     # two param logistic function
-    max_val = 1  # L
+    max_val = 0.99  # To prevent 1.0
     p_lick = max_val / (1 + np.exp(-k * (prob_lick - midpoint)))
 
     return p_lick
@@ -161,54 +131,6 @@ def plot_strategy(k_list):
         ax.set_ylabel("Output lick probability")
 
     plt.show()
-
-
-def loss_function(param_vals):
-    # missing arguments: signals, param_vals_, actual_lick_,
-    """
-    loss between predicted licks and actual licks
-    computed using cross entropy
-    This loss function is for licking versus no-licking, but does not compute the loss of the reaction time.
-    :return:
-    """
-
-    cross_entropy_loss = 0
-    for x_num, x in enumerate(signals):
-        posterior = forward_inference(x.flatten())
-        p_lick = apply_cost_benefit(change_posterior=posterior, true_positive=1.0, true_negative=0.0,
-                                    false_negative=0.0, false_positive=0.0)
-        p_lick = apply_strategy(p_lick, k=param_vals[0])
-        p_lick = np.max(p_lick)
-        cross_entropy_loss += -(actual_lick[x_num] * np.log(p_lick) + (1 - actual_lick[x_num]) * np.log(
-            1 - p_lick))
-
-    return cross_entropy_loss
-
-
-def loss_function_iter(param_vals, iter):
-    # missing arguments: signals, param_vals_, actual_lick_,
-    """
-    loss between predicted licks and actual licks
-    computed using cross entropy
-    This loss function is for licking versus no-licking, but does not compute the loss of the reaction time.
-    :param: param_vals, array of parameter values, in the following order:
-        1. k parameter in the sigmoid function
-        2. false_negative value in cost-benefit function
-        3. midpoint of the sigmoid decision function
-    :return:
-    """
-
-    cross_entropy_loss = 0
-    for x_num, x in enumerate(signals):
-        posterior = forward_inference(x.flatten())
-        p_lick = apply_cost_benefit(change_posterior=posterior, true_positive=1.0, true_negative=0.0,
-                                    false_negative=param_vals[1], false_positive=0.0)
-        p_lick = apply_strategy(p_lick, k=param_vals[0], midpoint=param_vals[2])
-        p_lick = np.max(p_lick)
-        cross_entropy_loss += -(actual_lick[x_num] * np.log(p_lick) + (1 - actual_lick[x_num]) * np.log(
-            1 - p_lick))
-
-    return cross_entropy_loss
 
 
 # Test forward algorithm
@@ -320,7 +242,7 @@ def gradient_descent_fit_vector(exp_data_path, training_savepath, init_param_val
 
     global time_shift
 
-    loss_val_matrix = np.zeros((num_epoch, len(time_shift_list)))
+    loss_val_matrix = onp.zeros((num_epoch, len(time_shift_list)))
     final_param_list = list() # list of list, each list is the parameter values for a particular time shift
 
 
@@ -334,7 +256,7 @@ def gradient_descent_fit_vector(exp_data_path, training_savepath, init_param_val
         @jit
         def update(i, opt_state):
             params = optimizers.get_params(opt_state)
-            return opt_update(i, grad(loss_function_fit_vector)(params, None), opt_state)
+            return opt_update(i, grad(loss_function_fit_vector)(params), opt_state)
 
         opt_state = opt_init(init_param_vals)
 
@@ -359,7 +281,162 @@ def gradient_descent_fit_vector(exp_data_path, training_savepath, init_param_val
         pkl.dump(training_result, handle)
 
 
-def loss_function_fit_vector(param_vals, iter):
+def create_vectorised_data(exp_data_path):
+    # LOADING DATA
+    with open(exp_data_path, "rb") as handle:
+        exp_data = pkl.load(handle)
+
+
+    mouse_rt = exp_data["rt"].flatten()
+    signal = exp_data["ys"].flatten()
+
+    # CONVERTING VECTORS TO A PADDED MATRIX SO THINGS CAN BE VECTORISED
+    # reshape signal to a matrix (so we can do vectorised operations on it)
+    num_time_samples = list()
+    for s in signal:
+        num_time_samples.append(len(s[0]))
+    max_time_bin = onp.max(num_time_samples)
+    num_trial = len(signal)
+
+    signal_matrix = onp.zeros(shape=(num_trial, max_time_bin))
+    for n, s in enumerate(signal):
+        signal_matrix[n, :len(s[0])] = s[0]
+
+    lick_matrix = onp.zeros(shape=(num_trial, max_time_bin))
+    lick_matrix[:] = 99
+
+    # fill the matrix with ones and zeros
+    for trial in np.arange(0, len(mouse_rt)):
+        if not np.isnan(mouse_rt[trial]):
+            mouse_lick_vector = onp.zeros(shape=(int(mouse_rt[trial]), ))
+            mouse_lick_vector[int(mouse_rt[trial] - 1)] = 1
+        else:
+            mouse_lick_vector = onp.zeros(shape=(len(signal[trial][0])), )
+        lick_matrix[trial, :len(mouse_lick_vector)] = mouse_lick_vector
+
+    return signal_matrix, lick_matrix
+
+
+def gradient_descent_fit_vector_faster(exp_data_path, training_savepath, init_param_vals=np.array([10.0, 0.0, 0.5]),
+                                time_shift_list=np.arange(0, 5), num_epoch=10):
+    """
+
+    :return:
+    """
+    # Define global variables used by loss_function
+    global signal_matrix
+    global lick_matrix
+    signal_matrix, lick_matrix = create_vectorised_data(exp_data_path)
+
+    # TODO: Think about how to do time shift
+
+
+    global time_shift
+
+    loss_val_matrix = onp.zeros((num_epoch, len(time_shift_list)))
+    final_param_list = list() # list of list, each list is the parameter values for a particular time shift
+
+    # define batched prediction function using vmap
+    global batched_predict_lick
+    batched_predict_lick = vmap(predict_lick, in_axes=(None, 0))
+
+
+    for time_shift in time_shift_list:
+
+        step_size = 0.001
+        momentum_mass = 0.9
+        opt_init, opt_update = optimizers.momentum(step_size, mass=momentum_mass)
+
+        @jit
+        def update(i, opt_state):
+            params = optimizers.get_params(opt_state)
+            return opt_update(i, grad(loss_function_fit_vector_faster)(params), opt_state)
+
+        opt_state = opt_init(init_param_vals)
+
+        # TODO: think about doing batch gradient descent
+        itercount = itertools.count()
+        for epoch in range(num_epoch):
+            opt_state = update(next(itercount), opt_state)
+            params = optimizers.get_params(opt_state)
+            loss_val = loss_function_fit_vector_faster(params)
+            print("Loss:", loss_val)
+
+
+
+
+        final_param_list.append(trained_params)
+
+    training_result = dict()
+    training_result["loss"] = loss_val_matrix
+    training_result["param_val"] = final_param_list
+
+    with open(training_savepath, "wb") as handle:
+        pkl.dump(training_result, handle)
+
+
+def predict_lick(param_vals, signal):
+    posterior = forward_inference(signal.flatten())
+    p_lick = apply_cost_benefit(change_posterior=posterior, true_positive=1.0, true_negative=0.0,
+                                false_negative=param_vals[1], false_positive=0.0)
+    p_lick = apply_strategy(p_lick, k=param_vals[0], midpoint=param_vals[2])
+    baseline = 0.01
+    # Add time shift
+    # p_lick = np.concatenate([np.repeat(baseline, time_shift), p_lick])
+    # p_lick = p_lick[0:len(actual_lick_vector)]  # clip p(lick) to be same length as actual lick
+
+    return p_lick
+
+
+def loss_function_fit_vector_faster(param_vals):
+    # missing arguments: signals, param_vals_, actual_lick_,
+    """
+    loss between predicted licks and actual licks
+    computed using cross entropy
+    This loss function is for licking versus no-licking, but does not compute the loss of the reaction time.
+    :param: param_vals, array of parameter values, in the following order:
+        1. k parameter in the sigmoid function
+        2. false_negative value in cost-benefit function
+        3. midpoint of the sigmoid decision function
+    :return:
+    """
+
+    batch_predictions = batched_predict_lick(param_vals, signal_matrix)
+    # batch_loss = batched_cross_entropy(actual_lick_vector=lick_matrix, p_lick=batch_predictions)
+    batch_loss = matrix_cross_entropy_loss(lick_matrix, batch_predictions)
+
+    return batch_loss
+
+
+def cross_entropy_loss(actual_lick_vector, p_lick):
+    # find last actual value of the lick vector (effectively like a mask)
+    # Can't use single argument np.where in JAX
+    # first_invalid_value = np.where(actual_lick_vector == 99, 1, 0)
+    # actual_lick_vector = actual_lick_vector[:first_invalid_value]
+    # p_lick = p_lick[:first_invalid_value]
+
+    # Can't use boolean indexing in JAX
+    # actual_lick = actual_lick_vector[actual_lick_vector != 99]
+    # p_lick = p_lick[actual_lick_vector != 99]
+
+    # dot product indexing that uses 3 argument np.where
+    # index_values = np.where(actual_lick_vector)
+
+    # actual_lick = actual_lick_vector
+
+    cross_entropy = -(np.dot(actual_lick_vector, np.log(p_lick)) + np.dot((1 - actual_lick_vector), np.log(1-p_lick)))
+    return cross_entropy
+
+def matrix_cross_entropy_loss(lick_matrix, prediction_matrix):
+    mask = np.where(lick_matrix == 99, 0, 1)
+    cross_entropy = -(lick_matrix * np.log(prediction_matrix)) + ((1 - lick_matrix) * np.log(1-prediction_matrix))
+    cross_entropy = cross_entropy * mask
+
+    return np.nansum(cross_entropy)  # nansum is just a quick fix, likely need to be more principled...
+
+
+
+def loss_function_fit_vector(param_vals):
     # missing arguments: signals, param_vals_, actual_lick_,
     """
     loss between predicted licks and actual licks
@@ -505,11 +582,40 @@ def compare_model_with_behaviour(model_behaviour_df_path, savepath=None, showfig
         plt.show()
 
 
+def test_vectorised_inference(exp_data_path):
+
+    global param_vals
+    param_vals = [10, 0, 0.5]
+
+    signal_matrix, lick_matrix = create_vectorised_data(exp_data_path)
+    print("Signal matrix shape:", onp.shape(signal_matrix))
+    print("Lick matrix shape:", onp.shape(lick_matrix))
+
+    batched_predict_lick = vmap(predict_lick, in_axes=(None, 0))
+    # batched_cross_entropy = vmap(cross_entropy_loss, in_axes=(None, 0))
+    # (for some reason, vmap for predict_lick must take two arguments, one with the parameters and one with the signals)
+
+    predictions = batched_predict_lick(param_vals, signal_matrix)
+    print("Shape of predictions", np.shape(predictions))
+    # loss = batched_cross_entropy(lick_matrix, predictions)
+
+    loss = matrix_cross_entropy_loss(lick_matrix, predictions)
+    print("Loss:", loss)
+    # for l, p in zip(lick_matrix, predictions):
+    #     loss = cross_entropy_loss(l, p)
+    #     print(loss)
+
+    # print("Shape of loss", np.shape(loss))
+
+
+
+
 def main():
-    datapath = "/media/timothysit/180C-2DDD/second_rotation_project/exp_data/subsetted_data/data_IO_083.pkl"
-    model_save_path = "/media/timothysit/180C-2DDD/second_rotation_project/hmm_data/model_response_083_14.pkl"
-    fig_save_path = "/media/timothysit/180C-2DDD/second_rotation_project/figures/model_response_083_14.png"
-    training_savepath = "/media/timothysit/180C-2DDD/second_rotation_project/hmm_data/training_result_083_18.pkl"
+    # datapath = "/media/timothysit/180C-2DDD/second_rotation_project/exp_data/subsetted_data/data_IO_083.pkl"
+    datapath = os.path.join(home, "Dropbox/notes/Projects/second_rotation_project/normative_model/exp_data/subsetted_data/data_IO_083.pkl")
+    model_save_path = os.path.join(home, "Dropbox/notes/Projects/second_rotation_project/normative_model/hmm_data/model_response_083_18.pkl")
+    fig_save_path = os.path.join(home, "Dropbox/notes/Projects/second_rotation_project/normative_model/figures/model_response_083_18.png")
+    training_savepath = os.path.join(home, "Dropbox/notes/Projects/second_rotation_project/normative_model/hmm_data/training_result_083_18.pkl")
 
     """
     param: 
@@ -526,11 +632,17 @@ def main():
     # run_through_entire_dataset(datapath=datapath, savepath=model_save_path, param=[1000, 0, 0.5], numtrial=None)
     # compare_model_with_behaviour(model_behaviour_df_path=model_save_path, savepath=fig_save_path, showfig=True)
 
-    gradient_descent_fit_vector(exp_data_path=datapath,
-                                training_savepath=training_savepath,
-                                init_param_vals=np.array([10.0, 0.0, 0.5]),
-                                time_shift_list=np.arange(0, 5), num_epoch=10)
+    # gradient_descent_fit_vector(exp_data_path=datapath,
+    #                             training_savepath=training_savepath,
+    #                             init_param_vals=np.array([10.0, 0.0, 0.5]),
+    #                             time_shift_list=np.arange(0, 5), num_epoch=10)
 
+    gradient_descent_fit_vector_faster(exp_data_path=datapath,
+                                 training_savepath=training_savepath,
+                                 init_param_vals=np.array([10.0, 0.0, 0.5]),
+                                 time_shift_list=np.arange(0, 5), num_epoch=10)
+
+    # test_vectorised_inference(exp_data_path=datapath)
 
 if __name__ == "__main__":
     main()
