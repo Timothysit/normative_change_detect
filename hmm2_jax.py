@@ -4,6 +4,7 @@ import jax.numpy as np
 import numpy as onp # original numpy for indexed assignment/mutation (outside context of differentiation)
 from jax import grad, jit, vmap
 from jax.experimental import optimizers
+import jax.random as random
 
 from jax import device_put  # onp operations not transferred to GPU, so they should run faster
 
@@ -20,6 +21,9 @@ import pandas as pd
 # from os.path import expanduser
 # home = expanduser("~")
 home = "/home/timsit"
+
+# debugging nans returned by grad
+from jax.config import config
 
 
 def cal_p_x_given_z(x_k):
@@ -79,7 +83,8 @@ def forward_inference(x):
 
         # NOTE: This step is not the conventional forward algorithm, but works.
         # p_z_given_x[k, :] = p_z_and_x / np.sum(p_z_and_x)
-        p_zk_given_xk = p_z_and_x / np.sum(p_z_and_x)
+        # p_zk_given_xk = p_z_and_x / np.sum(p_z_and_x)
+        p_zk_given_xk = np.divide(p_z_and_x, np.sum(p_z_and_x))
 
         p_change_given_x.append(np.sum(p_zk_given_xk[1:])) # sum from the second element
         # p_baseline_given_x.append(p_z_given_x[0]) # Just 1 - p_change
@@ -245,7 +250,7 @@ def gradient_descent_fit_vector(exp_data_path, training_savepath, init_param_val
     loss_val_matrix = onp.zeros((num_epoch, len(time_shift_list)))
     final_param_list = list() # list of list, each list is the parameter values for a particular time shift
 
-
+    loss_val_list = list()
 
     for time_shift in time_shift_list:
 
@@ -256,7 +261,7 @@ def gradient_descent_fit_vector(exp_data_path, training_savepath, init_param_val
         @jit
         def update(i, opt_state):
             params = optimizers.get_params(opt_state)
-            return opt_update(i, grad(loss_function_fit_vector)(params), opt_state)
+            return opt_update(i, grad(loss_function_fit_vector_faster)(params), opt_state)
 
         opt_state = opt_init(init_param_vals)
 
@@ -265,8 +270,10 @@ def gradient_descent_fit_vector(exp_data_path, training_savepath, init_param_val
         for epoch in range(num_epoch):
             opt_state = update(next(itercount), opt_state)
             params = optimizers.get_params(opt_state)
-            loss_val = loss_function_fit_vector(params)
+            loss_val = loss_function_fit_vector_faster(params)
+            loss_val_list.append(loss_val)
             print("Loss:", loss_val)
+
 
 
 
@@ -298,7 +305,13 @@ def create_vectorised_data(exp_data_path):
     max_time_bin = onp.max(num_time_samples)
     num_trial = len(signal)
 
-    signal_matrix = onp.zeros(shape=(num_trial, max_time_bin))
+    # signal_matrix = onp.zeros(shape=(num_trial, max_time_bin))
+
+    # pad with random valuesrather than 0s, might help up underflow...
+    # key = random.PRNGKey(0)
+    # signal_matrix = random.normal(key, shape=(num_trial, max_time_bin))
+    signal_matrix = onp.random.normal(loc=0.0, scale=1.0, size=(num_trial, max_time_bin))
+
     for n, s in enumerate(signal):
         signal_matrix[n, :len(s[0])] = s[0]
 
@@ -328,48 +341,93 @@ def gradient_descent_fit_vector_faster(exp_data_path, training_savepath, init_pa
     global lick_matrix
     signal_matrix, lick_matrix = create_vectorised_data(exp_data_path)
 
+
+
+
+    init_param_vals = np.array([11.0, 0.0, 0.5])
+
     # TODO: Think about how to do time shift
 
 
     global time_shift
 
-    loss_val_matrix = onp.zeros((num_epoch, len(time_shift_list)))
-    final_param_list = list() # list of list, each list is the parameter values for a particular time shift
-
+    # loss_val_matrix = onp.zeros((num_epoch, len(time_shift_list)))
+    param_list = list() # list of list, each list is the parameter values for a particular time shift
+    loss_val_list = list()
     # define batched prediction function using vmap
     global batched_predict_lick
     batched_predict_lick = vmap(predict_lick, in_axes=(None, 0))
 
+    # print("Initial parameters:", init_param_vals)
 
-    for time_shift in time_shift_list:
+    config.update("jax_debug_nans", True) # nan debugging
+
+    for time_shift in tqdm(time_shift_list):
 
         step_size = 0.001
         momentum_mass = 0.9
         opt_init, opt_update = optimizers.momentum(step_size, mass=momentum_mass)
 
+        """
         @jit
         def update(i, opt_state):
             params = optimizers.get_params(opt_state)
             return opt_update(i, grad(loss_function_fit_vector_faster)(params), opt_state)
+        """
 
-        opt_state = opt_init(init_param_vals)
 
         # TODO: think about doing batch gradient descent
         itercount = itertools.count()
+        """
         for epoch in range(num_epoch):
             opt_state = update(next(itercount), opt_state)
             params = optimizers.get_params(opt_state)
             loss_val = loss_function_fit_vector_faster(params)
             print("Loss:", loss_val)
+            print("Parameters:", params)
+            param_list.append(params)
+            loss_val_list.append(loss_val)
+        """
+
+        """
+        opt_state = opt_init(init_param_vals)
+
+        @jit
+        def step(i, opt_state):
+            params = optimizers.get_params(opt_state)
+            print("Params within step:", params)
+            g = grad(loss_function_fit_vector_faster)(params)
+            return opt_update(i, g, opt_state)
+
+        for epoch in range(num_epoch):
+            opt_state = step(epoch, opt_state)
+            params = optimizers.get_params(opt_state)
+            print("Params outside step", params)
+            loss_val = loss_function_fit_vector_faster(params)
+            print("Loss:", loss_val)
+            loss_val_list.append(loss_val)
+            param_list.append(params)
+            # print("Parameters:", params)
+        """
 
 
+        # Simple Gradient Descent
+        params = init_param_vals
+        for epoch in range(num_epoch):
+            print(epoch, params)
+            gradient = grad(loss_function_fit_vector_faster)(params)
+            print(gradient)
+            params -= 0.001 * gradient
+            loss = loss_function_fit_vector_faster(params)
+            print("Loss: ", loss)
+            loss_val_list.append(loss)
+            param_list.append(params)
 
 
-        final_param_list.append(trained_params)
 
     training_result = dict()
-    training_result["loss"] = loss_val_matrix
-    training_result["param_val"] = final_param_list
+    training_result["loss"] = loss_val_list
+    training_result["param_val"] = param_list
 
     with open(training_savepath, "wb") as handle:
         pkl.dump(training_result, handle)
@@ -587,23 +645,34 @@ def test_vectorised_inference(exp_data_path):
     global param_vals
     param_vals = [10, 0, 0.5]
 
+    global signal_matrix
+    global lick_matrix
     signal_matrix, lick_matrix = create_vectorised_data(exp_data_path)
     print("Signal matrix shape:", onp.shape(signal_matrix))
     print("Lick matrix shape:", onp.shape(lick_matrix))
 
+    print("Number of nans in signal matrix", onp.sum(onp.isnan(signal_matrix)))
+    print("Number of nans in lick matrix:", onp.sum(onp.isnan(lick_matrix)))
+
+    global batched_predict_lick
     batched_predict_lick = vmap(predict_lick, in_axes=(None, 0))
     # batched_cross_entropy = vmap(cross_entropy_loss, in_axes=(None, 0))
     # (for some reason, vmap for predict_lick must take two arguments, one with the parameters and one with the signals)
 
-    predictions = batched_predict_lick(param_vals, signal_matrix)
-    print("Shape of predictions", np.shape(predictions))
+    # predictions = batched_predict_lick(param_vals, signal_matrix)
+    # print("Shape of predictions", np.shape(predictions))
     # loss = batched_cross_entropy(lick_matrix, predictions)
 
-    loss = matrix_cross_entropy_loss(lick_matrix, predictions)
-    print("Loss:", loss)
+    # loss = matrix_cross_entropy_loss(lick_matrix, predictions)
+    # print("Loss:", loss)
     # for l, p in zip(lick_matrix, predictions):
     #     loss = cross_entropy_loss(l, p)
     #     print(loss)
+
+
+
+    loss = loss_function_fit_vector_faster(param_vals)
+    print("Loss from loss function:", loss)
 
     # print("Shape of loss", np.shape(loss))
 
@@ -613,9 +682,9 @@ def test_vectorised_inference(exp_data_path):
 def main():
     # datapath = "/media/timothysit/180C-2DDD/second_rotation_project/exp_data/subsetted_data/data_IO_083.pkl"
     datapath = os.path.join(home, "Dropbox/notes/Projects/second_rotation_project/normative_model/exp_data/subsetted_data/data_IO_083.pkl")
-    model_save_path = os.path.join(home, "Dropbox/notes/Projects/second_rotation_project/normative_model/hmm_data/model_response_083_18.pkl")
-    fig_save_path = os.path.join(home, "Dropbox/notes/Projects/second_rotation_project/normative_model/figures/model_response_083_18.png")
-    training_savepath = os.path.join(home, "Dropbox/notes/Projects/second_rotation_project/normative_model/hmm_data/training_result_083_18.pkl")
+    model_save_path = os.path.join(home, "Dropbox/notes/Projects/second_rotation_project/normative_model/hmm_data/model_response_083_21.pkl")
+    fig_save_path = os.path.join(home, "Dropbox/notes/Projects/second_rotation_project/normative_model/figures/model_response_083_21.png")
+    training_savepath = os.path.join(home, "Dropbox/notes/Projects/second_rotation_project/normative_model/hmm_data/training_result_083_21.pkl")
 
     """
     param: 
@@ -638,9 +707,9 @@ def main():
     #                             time_shift_list=np.arange(0, 5), num_epoch=10)
 
     gradient_descent_fit_vector_faster(exp_data_path=datapath,
-                                 training_savepath=training_savepath,
-                                 init_param_vals=np.array([10.0, 0.0, 0.5]),
-                                 time_shift_list=np.arange(0, 5), num_epoch=10)
+                                   training_savepath=training_savepath,
+                                   init_param_vals=np.array([10.0, 0.0, 0.5]),
+                                   time_shift_list=np.arange(0, 5), num_epoch=10)
 
     # test_vectorised_inference(exp_data_path=datapath)
 
