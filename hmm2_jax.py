@@ -175,12 +175,11 @@ def apply_cost_benefit(change_posterior, true_positive=1.0, true_negative=1.0, f
     return prob_lick
 
 
-def apply_strategy(prob_lick, k, midpoint=0.5):
+def apply_strategy(prob_lick, k=10, midpoint=0.5, max_val=1.0):
     # four param logistic function
     # prob_lick = y = a * 1 / (1 + np.exp(-k * (x - x0))) + b
 
     # two param logistic function
-    max_val = 0.99  # To prevent 1.0
     p_lick = max_val / (1 + np.exp(-k * (prob_lick - midpoint)))
 
     return p_lick
@@ -306,8 +305,8 @@ def gradient_descent_fit_vector(exp_data_path, training_savepath, init_param_val
     signal = exp_data["ys"].flatten()
 
     # Define global variables used by loss_function
-    global actual_lick_vector
-    global signals
+    # global actual_lick_vector
+    # global signals
     actual_lick_vector = mouse_lick_vector_list
     signals = signal
 
@@ -411,11 +410,8 @@ def gradient_descent_fit_vector_faster(exp_data_path, training_savepath, init_pa
     global lick_matrix
     signal_matrix, lick_matrix = create_vectorised_data(exp_data_path)
 
-    init_param_vals = np.array([11.0, 0.0, 0.5])
-
-    # TODO: Think about how to do time shift
-
     global time_shift
+    # TODO: Think about how to do time shift in this vectorised version
 
     # loss_val_matrix = onp.zeros((num_epoch, len(time_shift_list)))
     param_list = list() # list of list, each list is the parameter values for a particular time shift
@@ -430,9 +426,10 @@ def gradient_descent_fit_vector_faster(exp_data_path, training_savepath, init_pa
 
     for time_shift in tqdm(time_shift_list):
 
-        step_size = 0.001
-        momentum_mass = 0.9
-        opt_init, opt_update = optimizers.momentum(step_size, mass=momentum_mass)
+        step_size = 0.01
+        momentum_mass = 0.4
+        # opt_init, opt_update = optimizers.momentum(step_size, mass=momentum_mass)
+        opt_init, opt_update = optimizers.adam(step_size, b1=0.9, b2=0.999, eps=1e-8)
 
         """
         @jit
@@ -453,9 +450,13 @@ def gradient_descent_fit_vector_faster(exp_data_path, training_savepath, init_pa
             loss_val_list.append(loss_val)
         """
 
-        # TODO: Implement minibatch gradient descent
+        # Minibatch gradient descent
+
         num_train = onp.shape(signal_matrix)[0]
         batch_size = 128
+        num_complete_batches, leftover = divmod(num_train, batch_size)
+        num_batches = num_complete_batches + bool(leftover)
+
         def data_stream():
             rng = npr.RandomState(0)
             while True:
@@ -469,21 +470,28 @@ def gradient_descent_fit_vector_faster(exp_data_path, training_savepath, init_pa
         opt_state = opt_init(init_param_vals)
 
         @jit
-        def step(i, opt_state):
+        def step(i, opt_state, batch):
             params = optimizers.get_params(opt_state)
             # print("Params within step:", params)
-            g = grad(loss_function_fit_vector_faster)(params)
+            # g = grad(loss_function_fit_vector_faster)(params)
+            g = grad(loss_function_batch)(params, batch)
             return opt_update(i, g, opt_state)
 
         for epoch in range(num_epoch):
-            opt_state = step(epoch, opt_state)
-            params = optimizers.get_params(opt_state)
-            print("Params outside step", params)
-            loss_val = loss_function_fit_vector_faster(params)
-            print("Loss:", loss_val)
-            loss_val_list.append(loss_val)
-            param_list.append(params)
-            # print("Parameters:", params)
+            for _ in range(num_batches):
+                opt_state = step(epoch, opt_state, next(batches))
+
+            if epoch % 10 == 0:
+                params = optimizers.get_params(opt_state)
+                print("Parameters", params)
+                # loss_val = loss_function_fit_vector_faster(params)
+                loss_val = loss_function_batch(params, (signal_matrix, lick_matrix))
+                print("Loss:", loss_val)
+                loss_val_list.append(loss_val)
+                param_list.append(params)
+                # print("Parameters:", params)
+
+                # TODO: Write function to auto-stop on convergence
 
 
 
@@ -513,8 +521,8 @@ def predict_lick(param_vals, signal):
     # posterior = forward_inference(signal.flatten())
     posterior = forward_inference_w_tricks(signal.flatten())
     p_lick = apply_cost_benefit(change_posterior=posterior, true_positive=1.0, true_negative=0.0,
-                                false_negative=param_vals[1], false_positive=0.0)
-    p_lick = apply_strategy(p_lick, k=param_vals[0], midpoint=param_vals[2])
+                                false_negative=0.0, false_positive=0.0) # param_vals[1]
+    p_lick = apply_strategy(p_lick, k=param_vals[0], midpoint=param_vals[1])
     baseline = 0.01
     # Add time shift
     # p_lick = np.concatenate([np.repeat(baseline, time_shift), p_lick])
@@ -533,6 +541,7 @@ def loss_function_fit_vector_faster(param_vals):
         1. k parameter in the sigmoid function
         2. false_negative value in cost-benefit function
         3. midpoint of the sigmoid decision function
+    :param: signal, batched signal_matrix (ie. a subset of signal_matrix)
     :return:
     """
 
@@ -541,6 +550,31 @@ def loss_function_fit_vector_faster(param_vals):
     batch_loss = matrix_cross_entropy_loss(lick_matrix, batch_predictions)
 
     return batch_loss
+
+
+def loss_function_batch(param_vals, batch):
+    # missing arguments: signals, param_vals_, actual_lick_,
+    """
+    loss between predicted licks and actual licks
+    computed using cross entropy.
+    This version computes the loss for a batch.
+
+    Note that loss is now always a positive value (this seems to be the assumed input of JAX optimizers, in contrast to
+    autograd optimisers, which seems to take negative loss values).
+
+    """
+    signal, lick = batch
+
+
+    batch_predictions = batched_predict_lick(param_vals, signal)
+    # batch_loss = batched_cross_entropy(actual_lick_vector=lick_matrix, p_lick=batch_predictions)
+    batch_loss = matrix_cross_entropy_loss(lick, batch_predictions)
+
+
+
+    return -batch_loss
+
+
 
 
 def cross_entropy_loss(actual_lick_vector, p_lick):
@@ -802,9 +836,9 @@ def test_loss_function(datapath):
 def main():
     # datapath = "/media/timothysit/180C-2DDD/second_rotation_project/exp_data/subsetted_data/data_IO_083.pkl"
     datapath = os.path.join(home, "Dropbox/notes/Projects/second_rotation_project/normative_model/exp_data/subsetted_data/data_IO_083.pkl")
-    model_save_path = os.path.join(home, "Dropbox/notes/Projects/second_rotation_project/normative_model/hmm_data/model_response_083_21.pkl")
-    fig_save_path = os.path.join(home, "Dropbox/notes/Projects/second_rotation_project/normative_model/figures/model_response_083_21.png")
-    training_savepath = os.path.join(home, "Dropbox/notes/Projects/second_rotation_project/normative_model/hmm_data/training_result_083_21.pkl")
+    model_save_path = os.path.join(home, "Dropbox/notes/Projects/second_rotation_project/normative_model/hmm_data/model_response_083_22.pkl")
+    fig_save_path = os.path.join(home, "Dropbox/notes/Projects/second_rotation_project/normative_model/figures/model_response_083_22.png")
+    training_savepath = os.path.join(home, "Dropbox/notes/Projects/second_rotation_project/normative_model/hmm_data/training_result_083_22.pkl")
 
     """
     param: 
@@ -826,15 +860,17 @@ def main():
     #                             init_param_vals=np.array([10.0, 0.0, 0.5]),
     #                             time_shift_list=np.arange(0, 5), num_epoch=10)
 
-    # gradient_descent_fit_vector_faster(exp_data_path=datapath,
-    #                                 training_savepath=training_savepath,
-    #                                 init_param_vals=np.array([10.0, 0.0, 0.5]),
-    #                                 time_shift_list=np.arange(0, 5), num_epoch=10)
+    gradient_descent_fit_vector_faster(exp_data_path=datapath,
+                                     training_savepath=training_savepath,
+                                     init_param_vals=np.array([10.0, 0.5]),
+                                     time_shift_list=np.arange(0, 1), num_epoch=500)
+
+
 
     # test_vectorised_inference(exp_data_path=datapath)
 
 
-    test_loss_function(datapath)
+    # test_loss_function(datapath)
 
 
 
