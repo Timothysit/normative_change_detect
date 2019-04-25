@@ -2,6 +2,7 @@
 # https://github.com/google/jax
 import jax.numpy as np
 import numpy as onp # original numpy for indexed assignment/mutation (outside context of differentiation)
+import numpy.random as npr # randomisation for minibatch gradient descent
 from jax import grad, jit, vmap
 from jax.experimental import optimizers
 import jax.random as random
@@ -18,9 +19,9 @@ import itertools
 import os
 import pickle as pkl
 import pandas as pd
-# from os.path import expanduser
-# home = expanduser("~")
-home = "/home/timsit"
+from os.path import expanduser
+home = expanduser("~")
+# home = "/home/timsit"
 
 # debugging nans returned by grad
 from jax.config import config
@@ -94,6 +95,67 @@ def forward_inference(x):
     # return p_xk_given_z_store
 
 
+def forward_inference_w_tricks(x):
+    """
+    Rewritten with filtering recursion.
+    (Log-sum-exp won't work due to some transition probability values being zero)
+    (Actually, it may not work because I can't take the log of the right to left transition probabilities...)
+    :param x:
+    :return:
+    """
+    p_z1_given_x = list()
+    p_z2_given_x = list()
+
+    hazard_rate = 0.0001
+
+    transition_matrix = np.array([[1 - hazard_rate, hazard_rate/5.0, hazard_rate/5.0, hazard_rate/5.0, hazard_rate/5.0, hazard_rate/5.0],
+                                  [0, 1, 0, 0, 0, 0],
+                                  [0, 0, 1, 0, 0, 0],
+                                  [0, 0, 0, 1, 0, 0],
+                                  [0, 0, 0, 0, 1, 0],
+                                  [0, 0, 0, 0, 0, 1]])
+    init_state_probability = np.array([1.0, 0.0, 0.0, 0.0, 0.0, 0.0])
+
+    # transition_matrix = np.array([[1 - hazard_rate, hazard_rate],
+    #                               [0, 1]])
+
+
+
+    # List to store the posterior: p(z_k | x_{1:k}) for k = 1, ..., n
+    p_z_given_x = np.zeros((len(x), 6)) # this will be a n x M matrix, not sure if this is can be created without array assignment..
+    p_change_given_x = list()
+    p_baseline_given_x = list()
+    # p_xk_given_z_store = np.zeros((len(x), 6))
+
+    # Initial probabilities
+    p_z_and_x = cal_p_x_given_z(x_k=x[0]) * init_state_probability
+    p_z_given_x = p_z_and_x / np.sum(p_z_and_x)
+
+
+    # add the initial probability to the output list
+    p_change_given_x.append(0)
+
+
+    # Loop through the rest of the samples to compute P(x_k, z_k) for each
+    for k in np.arange(1, len(x)):
+        p_xk_given_z = cal_p_x_given_z(x_k=x[k])
+
+        # update conditional probability
+        p_z_and_x = np.dot((p_xk_given_z * p_z_given_x), transition_matrix)
+
+        # NOTE: This step is not the conventional forward algorithm, but works.
+        # p_z_given_x[k, :] = p_z_and_x / np.sum(p_z_and_x)
+        # p_zk_given_xk = p_z_and_x / np.sum(p_z_and_x)
+        p_z_given_x = np.divide(p_z_and_x, np.sum(p_z_and_x))
+
+        p_change_given_x.append(np.sum(p_z_given_x[1:])) # sum from the second element
+        # p_baseline_given_x.append(p_z_given_x[0]) # Just 1 - p_change
+
+    # return p_z_given_x
+    return np.array(p_change_given_x)
+    # return p_xk_given_z_store
+
+
 def apply_cost_benefit(change_posterior, true_positive=1.0, true_negative=1.0, false_negative=1.0, false_positive=1.0):
     """
     computes decision value based on cost and benefit
@@ -139,15 +201,19 @@ def plot_strategy(k_list):
 
 
 # Test forward algorithm
-def test_forward_algorithm():
-    x = hmm.sim_data(u_1=0.0, u_2=1.0, sigma=0.25, tau=50, n=100, update_interval=1, dist="normal",
+def test_forward_algorithm(tau=50):
+    x = hmm.sim_data(u_1=0.0, u_2=1.0, sigma=0.25, tau=tau, n=500, update_interval=1, dist="normal",
                      noise_mean=None, noise_sigma=None, noise_dist="log_normal")
 
-    joint_prob = forward_inference(x)
+    # joint_prob = forward_inference(x)
+    cond_prob = forward_inference_w_tricks(x)
+    # cond_prob =forward_inference(x)
 
     fig, axs = plt.subplots(2, 1, figsize=(8, 6))
     axs[0].plot(x)
-    axs[1].plot(joint_prob[:, 1])
+    axs[0].axvline(tau, color='r', linestyle="--")
+    # axs[1].plot(joint_prob[:, 1])
+    axs[1].plot(cond_prob)
 
     plt.show()
 
@@ -296,6 +362,7 @@ def create_vectorised_data(exp_data_path):
 
     mouse_rt = exp_data["rt"].flatten()
     signal = exp_data["ys"].flatten()
+    change_magnitude = exp_data["sig"].flatten()
 
     # CONVERTING VECTORS TO A PADDED MATRIX SO THINGS CAN BE VECTORISED
     # reshape signal to a matrix (so we can do vectorised operations on it)
@@ -310,17 +377,20 @@ def create_vectorised_data(exp_data_path):
     # pad with random valuesrather than 0s, might help up underflow...
     # key = random.PRNGKey(0)
     # signal_matrix = random.normal(key, shape=(num_trial, max_time_bin))
-    signal_matrix = onp.random.normal(loc=0.0, scale=1.0, size=(num_trial, max_time_bin))
+    # signal_matrix = onp.random.normal(loc=0.0, scale=1.0, size=(num_trial, max_time_bin))
+    signal_matrix = onp.zeros(shape=(num_trial, max_time_bin))
 
     for n, s in enumerate(signal):
         signal_matrix[n, :len(s[0])] = s[0]
+        signal_matrix[n, len(s[0]):] = onp.random.normal(loc=change_magnitude[n], scale=0.0625,
+                                                         size=(max_time_bin - len(s[0])))
 
     lick_matrix = onp.zeros(shape=(num_trial, max_time_bin))
     lick_matrix[:] = 99
 
     # fill the matrix with ones and zeros
     for trial in np.arange(0, len(mouse_rt)):
-        if not np.isnan(mouse_rt[trial]):
+        if not onp.isnan(mouse_rt[trial]):
             mouse_lick_vector = onp.zeros(shape=(int(mouse_rt[trial]), ))
             mouse_lick_vector[int(mouse_rt[trial] - 1)] = 1
         else:
@@ -341,13 +411,9 @@ def gradient_descent_fit_vector_faster(exp_data_path, training_savepath, init_pa
     global lick_matrix
     signal_matrix, lick_matrix = create_vectorised_data(exp_data_path)
 
-
-
-
     init_param_vals = np.array([11.0, 0.0, 0.5])
 
     # TODO: Think about how to do time shift
-
 
     global time_shift
 
@@ -375,8 +441,6 @@ def gradient_descent_fit_vector_faster(exp_data_path, training_savepath, init_pa
             return opt_update(i, grad(loss_function_fit_vector_faster)(params), opt_state)
         """
 
-
-        # TODO: think about doing batch gradient descent
         itercount = itertools.count()
         """
         for epoch in range(num_epoch):
@@ -389,13 +453,25 @@ def gradient_descent_fit_vector_faster(exp_data_path, training_savepath, init_pa
             loss_val_list.append(loss_val)
         """
 
-        """
+        # TODO: Implement minibatch gradient descent
+        num_train = onp.shape(signal_matrix)[0]
+        batch_size = 128
+        def data_stream():
+            rng = npr.RandomState(0)
+            while True:
+                perm = rng.permutation(num_train)
+                for i in range(num_batches):
+                    batch_idx = perm[i * batch_size:(i + 1) * batch_size]
+                    yield signal_matrix[batch_idx, :], lick_matrix[batch_idx, :]
+        batches = data_stream()
+
+
         opt_state = opt_init(init_param_vals)
 
         @jit
         def step(i, opt_state):
             params = optimizers.get_params(opt_state)
-            print("Params within step:", params)
+            # print("Params within step:", params)
             g = grad(loss_function_fit_vector_faster)(params)
             return opt_update(i, g, opt_state)
 
@@ -408,10 +484,11 @@ def gradient_descent_fit_vector_faster(exp_data_path, training_savepath, init_pa
             loss_val_list.append(loss_val)
             param_list.append(params)
             # print("Parameters:", params)
-        """
+
 
 
         # Simple Gradient Descent
+        """
         params = init_param_vals
         for epoch in range(num_epoch):
             print(epoch, params)
@@ -422,8 +499,7 @@ def gradient_descent_fit_vector_faster(exp_data_path, training_savepath, init_pa
             print("Loss: ", loss)
             loss_val_list.append(loss)
             param_list.append(params)
-
-
+        """
 
     training_result = dict()
     training_result["loss"] = loss_val_list
@@ -434,7 +510,8 @@ def gradient_descent_fit_vector_faster(exp_data_path, training_savepath, init_pa
 
 
 def predict_lick(param_vals, signal):
-    posterior = forward_inference(signal.flatten())
+    # posterior = forward_inference(signal.flatten())
+    posterior = forward_inference_w_tricks(signal.flatten())
     p_lick = apply_cost_benefit(change_posterior=posterior, true_positive=1.0, true_negative=0.0,
                                 false_negative=param_vals[1], false_positive=0.0)
     p_lick = apply_strategy(p_lick, k=param_vals[0], midpoint=param_vals[2])
@@ -492,6 +569,13 @@ def matrix_cross_entropy_loss(lick_matrix, prediction_matrix):
 
     return np.nansum(cross_entropy)  # nansum is just a quick fix, likely need to be more principled...
 
+
+def matrix_weighted_cross_entropy_loss(lick_matrix, prediction_matrix, alpha=1):
+    mask = np.where(lick_matrix == 99, 0, 1)
+    cross_entropy = -(alpha * lick_matrix * np.log(prediction_matrix)) + ((1 - lick_matrix) * np.log(1-prediction_matrix))
+    cross_entropy = cross_entropy * mask
+
+    return np.sum(cross_entropy)
 
 
 def loss_function_fit_vector(param_vals):
@@ -676,6 +760,42 @@ def test_vectorised_inference(exp_data_path):
 
     # print("Shape of loss", np.shape(loss))
 
+def test_loss_function(datapath):
+
+    params = [10.0, 0.0, 0.5]
+    time_shift = 0
+
+    signal_matrix, lick_matrix = create_vectorised_data(datapath)
+
+
+    # Plot examples
+    for s, l in zip(signal_matrix, lick_matrix):
+        prediction = predict_lick(params, s)
+        loss = matrix_cross_entropy_loss(lick_matrix=l, prediction_matrix=prediction)
+        biased_loss = matrix_weighted_cross_entropy_loss(lick_matrix=l, prediction_matrix=prediction, alpha=20)
+
+        fig, axs = plt.subplots(2, 1, figsize=(8, 8), sharex=True)
+        axs[0].plot(s[l != 99])
+        axs[1].plot(l[l != 99])
+        axs[1].plot(prediction[l != 99])
+        axs[1].text(x=0.1, y=0.8, s="Loss: " + str(loss), fontsize=12)
+        axs[1].text(x=0.1, y=0.6, s="Biased loss: " + str(biased_loss), fontsize=12)
+        axs[1].legend(["Mouse lick", "Model prediction"], frameon=False)
+
+        axs[0].spines["top"].set_visible(False)
+        axs[0].spines["right"].set_visible(False)
+        axs[1].spines["top"].set_visible(False)
+        axs[1].spines["right"].set_visible(False)
+
+        axs[0].set_ylabel("Stimulus speed")
+        axs[1].set_xlabel("Time (frames)")
+        axs[1].set_ylabel("P(lick)")
+
+        axs[1].set_ylim([0, 1])
+
+
+        plt.show()
+
 
 
 
@@ -706,12 +826,17 @@ def main():
     #                             init_param_vals=np.array([10.0, 0.0, 0.5]),
     #                             time_shift_list=np.arange(0, 5), num_epoch=10)
 
-    gradient_descent_fit_vector_faster(exp_data_path=datapath,
-                                   training_savepath=training_savepath,
-                                   init_param_vals=np.array([10.0, 0.0, 0.5]),
-                                   time_shift_list=np.arange(0, 5), num_epoch=10)
+    # gradient_descent_fit_vector_faster(exp_data_path=datapath,
+    #                                 training_savepath=training_savepath,
+    #                                 init_param_vals=np.array([10.0, 0.0, 0.5]),
+    #                                 time_shift_list=np.arange(0, 5), num_epoch=10)
 
     # test_vectorised_inference(exp_data_path=datapath)
+
+
+    test_loss_function(datapath)
+
+
 
 if __name__ == "__main__":
     main()
