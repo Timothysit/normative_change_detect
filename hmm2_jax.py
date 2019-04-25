@@ -598,7 +598,7 @@ def cross_entropy_loss(actual_lick_vector, p_lick):
 
 def matrix_cross_entropy_loss(lick_matrix, prediction_matrix):
     mask = np.where(lick_matrix == 99, 0, 1)
-    cross_entropy = -(lick_matrix * np.log(prediction_matrix)) + ((1 - lick_matrix) * np.log(1-prediction_matrix))
+    cross_entropy = - ((lick_matrix * np.log(prediction_matrix)) + (1 - lick_matrix) * np.log(1-prediction_matrix))
     cross_entropy = cross_entropy * mask
 
     return np.nansum(cross_entropy)  # nansum is just a quick fix, likely need to be more principled...
