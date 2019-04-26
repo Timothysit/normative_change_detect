@@ -261,11 +261,11 @@ def test_on_data(exp_data_file, change_val=1.0):
     return None
 
 
-def posterior_to_decision(posterior, return_prob=True, k=1.0, false_negative=0.0):
+def posterior_to_decision(posterior, return_prob=True, k=1.0, false_negative=0.0, midpoint=0.5):
     change_posterior = posterior  # p(z_2 | x_{1:k})
     p_lick = apply_cost_benefit(change_posterior, true_positive=1.0, true_negative=0.0,
                                 false_negative=false_negative, false_positive=0.0)
-    p_lick = apply_strategy(p_lick, k=k)
+    p_lick = apply_strategy(p_lick, k=k, midpoint=midpoint)
 
     if return_prob is True:
         return p_lick
@@ -493,22 +493,6 @@ def gradient_descent_fit_vector_faster(exp_data_path, training_savepath, init_pa
 
                 # TODO: Write function to auto-stop on convergence
 
-
-
-        # Simple Gradient Descent
-        """
-        params = init_param_vals
-        for epoch in range(num_epoch):
-            print(epoch, params)
-            gradient = grad(loss_function_fit_vector_faster)(params)
-            print(gradient)
-            params -= 0.001 * gradient
-            loss = loss_function_fit_vector_faster(params)
-            print("Loss: ", loss)
-            loss_val_list.append(loss)
-            param_list.append(params)
-        """
-
     training_result = dict()
     training_result["loss"] = loss_val_list
     training_result["param_val"] = param_list
@@ -517,8 +501,12 @@ def gradient_descent_fit_vector_faster(exp_data_path, training_savepath, init_pa
         pkl.dump(training_result, handle)
 
 
+
+
 def predict_lick(param_vals, signal):
-    # posterior = forward_inference(signal.flatten())
+
+    # impose some hard boundaries
+
     posterior = forward_inference_w_tricks(signal.flatten())
     p_lick = apply_cost_benefit(change_posterior=posterior, true_positive=1.0, true_negative=0.0,
                                 false_negative=0.0, false_positive=0.0) # param_vals[1]
@@ -572,8 +560,22 @@ def loss_function_batch(param_vals, batch):
 
 
 
-    return -batch_loss
+    return batch_loss
 
+
+def performance_batch(param_vals, batch):
+    """
+    Same as loss_function_batch, but also calculates other model peformance measures (accuracy, recall)
+    :param param_vals:
+    :param batch:
+    :return:
+    """
+    signal, lick = batch
+    batch_predictions = batched_predict_lick(param_vals, signal)
+    batch_loss = matrix_cross_entropy_loss(lick, batch_predictions)
+
+    # TODO: overall accuracy (regardless of time)
+    # This may actually require sampling from the model...
 
 
 
@@ -606,7 +608,7 @@ def matrix_cross_entropy_loss(lick_matrix, prediction_matrix):
 
 def matrix_weighted_cross_entropy_loss(lick_matrix, prediction_matrix, alpha=1):
     mask = np.where(lick_matrix == 99, 0, 1)
-    cross_entropy = -(alpha * lick_matrix * np.log(prediction_matrix)) + ((1 - lick_matrix) * np.log(1-prediction_matrix))
+    cross_entropy = -(alpha * lick_matrix * np.log(prediction_matrix) + (1 - lick_matrix) * np.log(1-prediction_matrix))
     cross_entropy = cross_entropy * mask
 
     return np.sum(cross_entropy)
@@ -681,23 +683,35 @@ def run_through_dataset_fit_vector(datapath, savepath, param):
     # mouse_FA = (exp_data["outcome"] == "FA").astype(float).flatten()
     # mouse_lick = np.any([mouse_hit, mouse_FA], axis=0).astype(float).flatten()
 
-    lick_choice_vector = list()
+    # lick_choice_vector = list()
 
+    """
     for signal in tqdm(signals):
         signal = signal.reshape(-1, 1)
 
-        posterior = forward_inference(signal.flatten())
-
-        lick_choice = posterior_to_decision(posterior, return_prob=True, k=param[0], false_negative=param[1],
-                                            midpoint=param[2])
+        # posterior = forward_inference(signal.flatten())
+        # lick_choice = posterior_to_decision(posterior, return_prob=True, k=param[0], midpoint=param[1])
+        lick_choice = predict_lick(param_vals=param, signal=signal)
 
         lick_choice_vector.append(lick_choice)
+    """
+
+    # considering running the vmap version of
+
+    signal_matrix, lick_matrix = create_vectorised_data(datapath)
+    batched_predict_lick = vmap(predict_lick, in_axes=(None, 0))
+
+    # signals has to be specially prepared to get the vectorised code running
+    prediction_matrix = batched_predict_lick(param, signal_matrix)
+    # prediction_matrix[lick_matrix == 99] = onp.nan
+    prediction_matrix = np.where(lick_matrix == 99, onp.nan, prediction_matrix)
 
     # TODO: Add time shift
 
     vec_dict = dict()
+    vec_dict["change_value"] = change
     vec_dict["rt"] = absolute_decision_time
-    vec_dict["model_vec_output"] = lick_choice_vector
+    vec_dict["model_vec_output"] = prediction_matrix
     vec_dict["true_change_time"] = tau
 
     with open(savepath, "wb") as handle:
@@ -794,48 +808,157 @@ def test_vectorised_inference(exp_data_path):
 
     # print("Shape of loss", np.shape(loss))
 
-def test_loss_function(datapath):
+def test_loss_function(datapath, plot_example=True, savepath=None):
 
-    params = [10.0, 0.0, 0.5]
+    params = [10.0, 0.5, 0.0]
     time_shift = 0
 
     signal_matrix, lick_matrix = create_vectorised_data(datapath)
+    batched_predict_lick = vmap(predict_lick, in_axes=(None, 0))
 
 
     # Plot examples
-    for s, l in zip(signal_matrix, lick_matrix):
-        prediction = predict_lick(params, s)
-        loss = matrix_cross_entropy_loss(lick_matrix=l, prediction_matrix=prediction)
-        biased_loss = matrix_weighted_cross_entropy_loss(lick_matrix=l, prediction_matrix=prediction, alpha=20)
+    if plot_example is True:
+        for s, l in zip(signal_matrix, lick_matrix):
+            prediction = predict_lick(params, s)
+            loss = matrix_cross_entropy_loss(lick_matrix=l, prediction_matrix=prediction)
+            biased_loss = matrix_weighted_cross_entropy_loss(lick_matrix=l, prediction_matrix=prediction, alpha=20)
 
-        fig, axs = plt.subplots(2, 1, figsize=(8, 8), sharex=True)
-        axs[0].plot(s[l != 99])
-        axs[1].plot(l[l != 99])
-        axs[1].plot(prediction[l != 99])
-        axs[1].text(x=0.1, y=0.8, s="Loss: " + str(loss), fontsize=12)
-        axs[1].text(x=0.1, y=0.6, s="Biased loss: " + str(biased_loss), fontsize=12)
-        axs[1].legend(["Mouse lick", "Model prediction"], frameon=False)
+            fig, axs = plt.subplots(2, 1, figsize=(8, 8), sharex=True)
+            axs[0].plot(s[l != 99])
+            axs[1].plot(l[l != 99])
+            axs[1].plot(prediction[l != 99])
+            axs[1].text(x=0.1, y=0.8, s="Loss: " + str(loss), fontsize=12)
+            axs[1].text(x=0.1, y=0.6, s="Biased loss: " + str(biased_loss), fontsize=12)
+            axs[1].legend(["Mouse lick", "Model prediction"], frameon=False)
 
-        axs[0].spines["top"].set_visible(False)
-        axs[0].spines["right"].set_visible(False)
-        axs[1].spines["top"].set_visible(False)
-        axs[1].spines["right"].set_visible(False)
+            axs[0].spines["top"].set_visible(False)
+            axs[0].spines["right"].set_visible(False)
+            axs[1].spines["top"].set_visible(False)
+            axs[1].spines["right"].set_visible(False)
 
-        axs[0].set_ylabel("Stimulus speed")
-        axs[1].set_xlabel("Time (frames)")
-        axs[1].set_ylabel("P(lick)")
+            axs[0].set_ylabel("Stimulus speed")
+            axs[1].set_xlabel("Time (frames)")
+            axs[1].set_ylabel("P(lick)")
 
-        axs[1].set_ylim([0, 1])
-
-
-        plt.show()
+            axs[1].set_ylim([0, 1])
 
 
+            plt.show()
+
+    # Plot loss across all examples
+
+    all_zero_prediction_matrix = onp.zeros(shape=np.shape(lick_matrix))
+    all_zero_prediction_matrix[:] = 1e-8
+
+    all_one_prediction_matrix = onp.zeros(shape=np.shape(lick_matrix))
+    all_one_prediction_matrix[:] = 1 - 1e-8
+
+
+    alpha_list = np.arange(1, 20)
+    # num_model = 3
+    # loss_store = np.zeros(shape=(num_model, len(alpha_list)))
+    all_zero_loss_store = list()
+    all_one_loss_store = list()
+    model_loss_store = list()
+
+    prediction_matrix = batched_predict_lick(params, signal_matrix)
+
+    for n, alpha in tqdm(enumerate(alpha_list)):
+        all_zero_loss = matrix_weighted_cross_entropy_loss(lick_matrix, all_zero_prediction_matrix, alpha=alpha)
+        # all_one_loss = matrix_weighted_cross_entropy_loss(lick_matrix, all_one_prediction_matrix, alpha=alpha)
+        model_loss = matrix_weighted_cross_entropy_loss(lick_matrix, prediction_matrix, alpha=alpha)
+
+        all_zero_loss_store.append(all_zero_loss)
+        # all_one_loss_store.append(all_one_loss)
+        model_loss_store.append(model_loss)
+        # loss_store[0, n] = all_zero_loss
+        # loss_store[1, n] = all_one_loss
+        # loss_store[2, n] = model_loss
+
+    fig, axs = plt.subplots(1, 1, figsize=(8, 8))
+    # axs.plot(loss_store)
+    axs.plot(alpha_list, all_zero_loss_store)
+    # axs.plot(alpha_list, all_one_loss_store)
+    axs.plot(alpha_list, model_loss_store)
+    axs.legend(["All zero", "Model"], frameon=False)
+
+    axs.set_ylabel("Cross entropy loss")
+    axs.set_xlabel("False negative bias (alpha)")
+
+    if savepath is not None:
+        plt.savefig(savepath)
+    plt.show()
+
+def plot_training_loss(training_savepath, figsavepath=None):
+
+    with open(training_savepath, "rb") as handle:
+        training_result = pkl.load(handle)
+
+    epoch_per_step = 10
+    loss = training_result["loss"]
+    parameters = training_result["param_val"]
+
+    fig, ax = plt.subplots(1, 1, figsize=(8, 6))
+    ax.plot(np.arange(1, len(loss)+1) * epoch_per_step, loss)
+    ax.set_ylabel("Loss")
+    ax.set_xlabel("Epochs")
+
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+
+    if figsavepath is not None:
+        plt.savefig(figsavepath, dpi=300)
+
+    plt.show()
+
+
+def plot_sigmoid_comparisions(training_savepath, figsavepath=None):
+
+    with open(training_savepath, "rb") as handle:
+        training_result = pkl.load(handle)
+
+    parameters = training_result["param_val"]
+    num_set_to_plot = 10
+    epoch_step_size = 10
+    total_num_set = len(parameters)
+    set_index_to_plot = onp.round(onp.linspace(0, total_num_set-1, num_set_to_plot))
+    epochs_plotted = (set_index_to_plot + 1) * epoch_step_size
+
+    fake_posterior = np.linspace(0, 1, 1000)
+
+    fig, ax = plt.subplots(1, 1, figsize=(8, 6))
+
+    for index in set_index_to_plot:
+
+        param_vals = parameters[int(index)]
+
+        p_lick = apply_cost_benefit(change_posterior=fake_posterior, true_positive=1.0, true_negative=0.0,
+                                    false_negative=0.0, false_positive=0.0) # param_vals[1]
+        p_lick = apply_strategy(p_lick, k=param_vals[0], midpoint=param_vals[1])
+
+        ax.plot(fake_posterior, p_lick)
+
+    ax.legend(list(epochs_plotted), frameon=False, title="Epochs")
+    ax.set_xlabel(r"$p(z_t = \mathrm{change} \vert x_{1:t})$")
+    ax.set_ylabel(r"$p(\mathrm{lick})$")
+
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+
+    if figsavepath is not None:
+        plt.savefig(figsavepath, dpi=300)
+
+    plt.show()
 
 
 def main():
     # datapath = "/media/timothysit/180C-2DDD/second_rotation_project/exp_data/subsetted_data/data_IO_083.pkl"
-    datapath = os.path.join(home, "Dropbox/notes/Projects/second_rotation_project/normative_model/exp_data/subsetted_data/data_IO_083.pkl")
+    model_number = 22
+    exp_data_number = 83
+    main_folder = os.path.join(home, "Dropbox/notes/Projects/second_rotation_project/normative_model")
+    # TODO: generalise the code below
+    datapath = os.path.join(main_folder, "exp_data/subsetted_data/data_IO_083.pkl")
     model_save_path = os.path.join(home, "Dropbox/notes/Projects/second_rotation_project/normative_model/hmm_data/model_response_083_22.pkl")
     fig_save_path = os.path.join(home, "Dropbox/notes/Projects/second_rotation_project/normative_model/figures/model_response_083_22.png")
     training_savepath = os.path.join(home, "Dropbox/notes/Projects/second_rotation_project/normative_model/hmm_data/training_result_083_22.pkl")
@@ -852,7 +975,9 @@ def main():
     # simple_gradient_descent(datapath, num_epoch=100, param_vals = np.array([9.59, 0.27, 0.37]),
     #                         training_savepath=training_savepath)
     # plot_training_result(training_savepath)
-    # run_through_entire_dataset(datapath=datapath, savepath=model_save_path, param=[1000, 0, 0.5], numtrial=None)
+    run_through_dataset_fit_vector(datapath=datapath, savepath=model_save_path, param=[6.5, 1.39])
+
+
     # compare_model_with_behaviour(model_behaviour_df_path=model_save_path, savepath=fig_save_path, showfig=True)
 
     # gradient_descent_fit_vector(exp_data_path=datapath,
@@ -860,17 +985,23 @@ def main():
     #                             init_param_vals=np.array([10.0, 0.0, 0.5]),
     #                             time_shift_list=np.arange(0, 5), num_epoch=10)
 
-    gradient_descent_fit_vector_faster(exp_data_path=datapath,
-                                     training_savepath=training_savepath,
-                                     init_param_vals=np.array([10.0, 0.5]),
-                                     time_shift_list=np.arange(0, 1), num_epoch=500)
+    # gradient_descent_fit_vector_faster(exp_data_path=datapath,
+    #                                   training_savepath=training_savepath,
+    #                                   init_param_vals=np.array([10.0, 0.5]),
+    #                                   time_shift_list=np.arange(0, 1), num_epoch=200)
 
 
 
     # test_vectorised_inference(exp_data_path=datapath)
 
+    # figsavepath = os.path.join(home, "Dropbox/notes/Projects/second_rotation_project/normative_model/figures/test_alpha.png")
+    # test_loss_function(datapath, plot_example=False, savepath=figsavepath)
 
-    # test_loss_function(datapath)
+    # figsavepath = os.path.join(main_folder, "figures/training_result_model" + str(model_number))
+    # plot_training_loss(training_savepath, figsavepath=figsavepath)
+
+    # figsavepath = os.path.join(main_folder, "figures/transfer_function_model" + str(model_number))
+    # plot_sigmoid_comparisions(training_savepath, figsavepath=figsavepath)
 
 
 
