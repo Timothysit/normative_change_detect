@@ -47,10 +47,17 @@ def sample_from_model(model_data_path, num_samples=1000, plot_check=False, savep
 
     print("Sampling from model")
     for trial_num, model_trial_output in tqdm(enumerate(model_prob_output)):
+        # don't read the nans from model_prob_output (in the case where model_prob_output is in matrix form)
+        model_trial_output = model_trial_output[~np.isnan(model_trial_output)]
+
         # setting n=1 is equivalent to sampling from a Bernoulli distribution (no repeats)
         lick_samples = np.random.binomial(n=1, p=model_trial_output, size=(num_samples, len(model_trial_output)))
-        model_rt = np.argmax(lick_samples, axis=1) # - actual_change_time[trial_num] # on each row, find the first occurence of 1 (lick)
-        prop_lick = np.sum(model_rt > 0) / num_samples # proportion of lick, where reaction time is not zero.
+        model_no_lick_index = np.where(np.sum(lick_samples, axis=1) == 0)[0]
+        model_rt = np.argmax(lick_samples, axis=1).astype(float) # - actual_change_time[trial_num] # on each row, find the first occurence of 1 (lick)
+        # note that lick during the first frame will return model_rt of 0 (and so will no lick)
+        # this problem is dealt with in the following line by setting true no licks to np.nan
+        model_rt[model_no_lick_index] = np.nan
+        prop_lick = np.sum(~np.isnan(model_rt)) / num_samples # proportion of lick, where reaction time is not zero.
 
         # Storing individual sample data
         individual_sample_rt.append(model_rt)
@@ -60,21 +67,22 @@ def sample_from_model(model_data_path, num_samples=1000, plot_check=False, savep
         # model_relative_rt = np.argmax(lick_samples, axis=1) - actual_change_time[trial_num]
 
         # mean reaction time (zero excluded)
-        mean_model_rt = np.mean(model_rt[model_rt > 0])
+        mean_model_rt = np.nanmean(model_rt)
+
 
         # compute model performance
         if not np.isnan(actual_change_time[trial_num]):
-            early_lick_prop = np.sum(model_rt[model_rt > 0] < actual_change_time[trial_num]) / num_samples
+            early_lick_prop = np.sum(model_rt[~np.isnan(model_rt)] < actual_change_time[trial_num]) / num_samples
             correct_lick_prop = np.sum(model_rt >= actual_change_time[trial_num]) / num_samples
-            miss_prop = np.sum(model_rt == 0) / num_samples
+            miss_prop = np.sum(np.isnan(model_rt)) / num_samples
             false_alarm_prop = np.nan
             correct_no_lick_prop = np.nan
         else:
             early_lick_prop = np.nan
             correct_lick_prop = np.nan
             miss_prop = np.nan
-            false_alarm_prop = np.sum(model_rt > 0) / num_samples
-            correct_no_lick_prop = np.sum(model_rt == 0) / num_samples
+            false_alarm_prop = np.sum(~np.isnan(model_rt)) / num_samples
+            correct_no_lick_prop = np.sum(np.isnan(model_rt)) / num_samples
 
         prop_lick_list.append(prop_lick)
         early_lick_prop_list.append(early_lick_prop)
@@ -109,6 +117,7 @@ def sample_from_model(model_data_path, num_samples=1000, plot_check=False, savep
     sampled_data["miss_prop"] = miss_prop_list
     sampled_data["false_alarm_prop"] = false_alarm_prop_list
     sampled_data["correct_no_lick_prop"] = correct_no_lick_list
+    sampled_data["hit_prop"] = np.nansum([np.array(correct_lick_prop_list), np.array(correct_no_lick_list)], axis=0)
     sampled_data["mean_model_rt"] = mean_model_rt_list
     sampled_data["mean_model_relative_rt"] = mean_model_rt_list - actual_change_time
 
@@ -117,6 +126,7 @@ def sample_from_model(model_data_path, num_samples=1000, plot_check=False, savep
     individual_sample_dict = dict()
     # save data (flattening list of array with concat)
     individual_sample_dict["actual_change_time"] = np.concatenate(individual_sample_actual_change_time).ravel()
+    individual_sample_dict["absolute_decision_time"] = np.concatenate(individual_sample_rt).ravel()
     individual_sample_dict["peri_stimulus_rt"] = np.concatenate(individual_sample_rt).ravel() - individual_sample_dict["actual_change_time"]
     individual_sample_dict["change"] = np.log(np.concatenate(individual_sample_change_value).ravel())
     individual_sample_df = pd.DataFrame.from_dict(individual_sample_dict)
@@ -149,12 +159,15 @@ def plot_psychometric(model_sample_path, mouse_beahviour_df_path=None, metric="p
 
     # Plot mouse behaviour as well
     if mouse_beahviour_df_path is not None:
-        metric = "mouse_lick"
+        if metric == "prop_lick":
+            mouse_metric = "mouse_lick"
+        elif metric == "hit_prop":
+            mouse_metric = "mouse_hit"
         mouse_df = pd.read_pickle(mouse_beahviour_df_path)
-        mouse_prop_choice = mouse_df.groupby(["change"], as_index=False).agg({metric: "mean"})
+        mouse_prop_choice = mouse_df.groupby(["change"], as_index=False).agg({mouse_metric: "mean"})
 
-        ax.plot(np.exp(mouse_prop_choice["change"]), mouse_prop_choice[metric], label="Mouse")
-        ax.scatter(np.exp(mouse_prop_choice["change"]), mouse_prop_choice[metric], label=None)
+        ax.plot(np.exp(mouse_prop_choice["change"]), mouse_prop_choice[mouse_metric], label="Mouse")
+        ax.scatter(np.exp(mouse_prop_choice["change"]), mouse_prop_choice[mouse_metric], label=None)
 
         ax.legend(frameon=False)
 
@@ -244,12 +257,16 @@ def get_mouse_behaviour_df(mouse_behaviour_path, savepath=None):
         return mouse_df
 
 
-def compare_distributions(mouse_df_path, model_sample_path=None, savepath=None):
+def compare_distributions(mouse_df_path, model_sample_path=None, savepath=None, sub_sample=None, plot_type="hits",
+                          metric="peri_stimulus_rt", ylabel="Peri stimulus reaction time (frames)"):
     """
     Raincloud plot to compare reaction time distributions
     :param mouse_df_path:
     :param model_sample_path:
     :param savepath:
+    :param metric: type of reaction time to plot,
+        option 1 | "peri_stimulus_rt"
+        option 2 | "absolute_decision_time"
     :return:
     """
 
@@ -263,8 +280,18 @@ def compare_distributions(mouse_df_path, model_sample_path=None, savepath=None):
 
     if model_sample_path is None:
         mouse_behaviour_df = pd.read_pickle(mouse_df_path)
+        if plot_type == "hits":
+            subset_index = np.where((mouse_behaviour_df["peri_stimulus_rt"] >= 0) & (mouse_behaviour_df["change"] > 0))
+            mouse_behaviour_df = mouse_behaviour_df.iloc[subset_index]
+        elif plot_type == "false_alarms":
+            hit_index = np.where((mouse_behaviour_df["peri_stimulus_rt"]) >= 0 & (mouse_behaviour_df["change"] > 0))[0]
+            mouse_behaviour_df = mouse_behaviour_df.loc[~mouse_behaviour_df.index.isin(hit_index)]
+            # nice trick from: https://stackoverflow.com/questions/29134635/slice-pandas-dataframe-by-labels-that-are-not-in-a-list
     else:
         model_behaviour_df = pd.read_pickle(model_sample_path)
+
+
+
 
 
     fig, axs = plt.subplots(1, 2, figsize=(8, 6), sharey=True)
@@ -273,10 +300,14 @@ def compare_distributions(mouse_df_path, model_sample_path=None, savepath=None):
     # strip (ie. scatter with jitter)
 
     if model_sample_path is None:
-        sns.stripplot(x="change", y="peri_stimulus_rt", data=mouse_behaviour_df.sample(1000),
+        if sub_sample is None:
+            sns.stripplot(x="change", y=metric, data=mouse_behaviour_df,
                       size=strip_dot_size, jitter=strip_jitter, alpha=strip_dot_alpha, ax=axs[0])
+        else:
+            sns.stripplot(x="change", y=metric, data=mouse_behaviour_df.sample(sub_sample),
+                          size=strip_dot_size, jitter=strip_jitter, alpha=strip_dot_alpha, ax=axs[0])
     else:
-        sns.stripplot(x="change_value", y="mean_model_relative_rt", data=model_behaviour_df,
+        sns.stripplot(x="change_value", y=metric, data=model_behaviour_df,
                       size=strip_dot_size, jitter=strip_jitter, alpha=strip_dot_alpha, ax=axs[0])
 
     # box plot
@@ -285,7 +316,7 @@ def compare_distributions(mouse_df_path, model_sample_path=None, savepath=None):
     if model_sample_path is None:
         for change_val in np.unique(mouse_behaviour_df["change"]):
             index = np.where(mouse_behaviour_df["change"] == change_val)[0]
-            data_to_plot = mouse_behaviour_df["peri_stimulus_rt"][index].dropna()
+            data_to_plot = mouse_behaviour_df[metric][index] .dropna()
             if len(data_to_plot) == 0:
                 pass
             else:
@@ -327,15 +358,16 @@ def compare_distributions(mouse_df_path, model_sample_path=None, savepath=None):
     plt.show()
 
 
-def main():
-
-    model_number = 22
-    mouse_number = 83
+def main(model_number=20, mouse_number=83, run_sample_from_model=True, run_plot_psychom_metric_comparison=True,
+         run_plot_mouse_reaction_time=True,
+         run_plot_model_reaction_time=True):
 
     # load data
     mainfolder = os.path.join(home, "Dropbox/notes/Projects/second_rotation_project/normative_model/")
-    model_data_path = os.path.join(mainfolder, "hmm_data/model_response_083_22.pkl")
-    model_sample_path = os.path.join(mainfolder, "hmm_data/model_samples_083_22.pkl")
+    model_data_path = os.path.join(mainfolder, "hmm_data/model_response_0" + str(mouse_number) +
+                                   "_" + str(model_number) + str(".pkl"))
+    model_sample_path = os.path.join(mainfolder, "hmm_data/model_samples_0" + str(mouse_number) +
+                                    "_" + str(model_number) + str(".pkl"))
     model_individual_sample_path = os.path.join(mainfolder, "hmm_data/model_individual_samples_083_" +
                                                 str(model_number) + ".pkl")
 
@@ -345,19 +377,26 @@ def main():
     # get_mouse_behaviour_df(mouse_behaviour_path, savepath=mouse_df_path)
 
 
-
-    sample_from_model(model_data_path, num_samples=1000, plot_check=False,
-                          savepath=model_sample_path, model_individual_sample_path=model_individual_sample_path)
+    if run_sample_from_model is True:
+        sample_from_model(model_data_path, num_samples=1000, plot_check=False,
+                         savepath=model_sample_path, model_individual_sample_path=model_individual_sample_path)
 
     # plot_psychometric(model_sample_path, metric="prop_lick", label="Proportion of licks",
     #                  savepath=None, showfig=True)
 
     # Plot psychoemtric curve with model and mouse
-    # figsavepath = os.path.join(mainfolder, "figures/psychometric_curve_comparision_mouse" + str(mouse_number)
-    #                            + "_model_" + str(model_number))
-    # plot_psychometric(model_sample_path, mouse_beahviour_df_path=mouse_df_path,
-    #                   metric="prop_lick", label="Proportion of licks",
-    #                    savepath=figsavepath, showfig=True)
+    if run_plot_psychom_metric_comparison is True:
+        figsavepath = os.path.join(mainfolder, "figures/licks_psychometric_curve_comparision_mouse" + str(mouse_number)
+                                    + "_model_" + str(model_number))
+        plot_psychometric(model_sample_path, mouse_beahviour_df_path=mouse_df_path,
+                           metric="prop_lick", label="Proportion of licks",
+                            savepath=figsavepath, showfig=True)
+
+        figsavepath = os.path.join(mainfolder, "figures/hits_psychometric_curve_comparision_mouse" + str(mouse_number)
+                                    + "_model_" + str(model_number))
+        plot_psychometric(model_sample_path, mouse_df_path,
+                                      metric="hit_prop", label="Proportion of hits", savepath=figsavepath)
+
 
     # savepath = os.path.join(mainfolder, "reaction_time_samples_model_" + str(model_number))
     # plot_psychometric(model_sample_path, metric="
@@ -382,16 +421,31 @@ def main():
 
 
     # Plot reaction time distributions
-    # figsavepath = os.path.join(mainfolder, "figures/reaction_time_distribution_mouse" + str(mouse_number))
-    # compare_distributions(mouse_df_path, savepath=figsavepath)
+    if run_plot_mouse_reaction_time is True:
+        figsavepath = os.path.join(mainfolder, "figures/reaction_time_distribution_mouse_hits_" + str(mouse_number))
+        compare_distributions(mouse_df_path, savepath=figsavepath, plot_type="hits")
 
-    # figsavepath = os.path.join(mainfolder, "figures/reaction_time_distribution_model" + str(model_number))
+        figsavepath = os.path.join(mainfolder, "figures/reaction_time_distribution_false_alarms_" + str(mouse_number))
+        compare_distributions(mouse_df_path, savepath=figsavepath, plot_type="false_alarms", metric="absolute_decision_time")
+
+    #figsavepath = os.path.join(mainfolder, "figures/reaction_time_distribution_model" + str(model_number))
     # compare_distributions(mouse_df_path=None, model_sample_path=model_sample_path, savepath=figsavepath)
 
-    # Plot individual samples
-    # figsavepath = os.path.join(mainfolder, "figures/individual_reaction_time_distribution_model" + str(model_number))
-    # compare_distributions(mouse_df_path=model_individual_sample_path, savepath=figsavepath)
+    # Plot individual samples of reaction time from the model
+    if run_plot_model_reaction_time is True:
+        figsavepath = os.path.join(mainfolder, "figures/individual_reaction_time_distribution_model_hits_"
+                                   + str(model_number))
+        compare_distributions(mouse_df_path=model_individual_sample_path, savepath=figsavepath, sub_sample=1000,
+                              plot_type="hits")
+
+        figsavepath = os.path.join(mainfolder, "figures/individual_reaction_time_distribution_model_false_alarms_"
+                                   + str(model_number))
+        compare_distributions(mouse_df_path=model_individual_sample_path, savepath=figsavepath, sub_sample=None,
+                              plot_type="false_alarms", metric="absolute_decision_time")
+
 
 
 if __name__ == "__main__":
-    main()
+    main(model_number=22, run_sample_from_model=False, run_plot_psychom_metric_comparison=True,
+         run_plot_mouse_reaction_time=False,
+         run_plot_model_reaction_time=False)
