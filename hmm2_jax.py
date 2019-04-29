@@ -518,6 +518,11 @@ def predict_lick(param_vals, signal):
         baseline = 0.88888888 # nan placeholder
         p_lick = np.concatenate([np.repeat(baseline, time_shift), p_lick])
         p_lick = p_lick[0:len(signal.flatten())]  # clip p(lick) to be same length as actual lick
+    elif time_shift < 0:
+        # backward shift
+        baseline = 0.88888888  # nan placeholder
+        p_lick = np.concatenate([p_lick, np.repeat(baseline, abs(time_shift))])
+        p_lick = p_lick[abs(time_shift):(len(signal.flatten()) + abs(time_shift))]
 
     return p_lick
 
@@ -559,7 +564,9 @@ def loss_function_batch(param_vals, batch):
 
     batch_predictions = batched_predict_lick(param_vals, signal)
     # batch_loss = batched_cross_entropy(actual_lick_vector=lick_matrix, p_lick=batch_predictions)
-    batch_loss = matrix_cross_entropy_loss(lick, batch_predictions)
+    # batch_loss = matrix_cross_entropy_loss(lick, batch_predictions)
+    batch_loss = matrix_weighted_cross_entropy_loss(lick, batch_predictions, alpha=2)
+
 
 
 
@@ -962,8 +969,8 @@ def plot_time_shift_test(exp_data_path, param=[10, 0.5], time_shift_list=[0, 1],
     signal_matrix, lick_matrix = create_vectorised_data(exp_data_path)
 
     # subset to smaller size to compute faster
-    signal_matrix = signal_matrix[0:10, :]
-    lick_matrix = lick_matrix[0:10, :]
+    signal_matrix = signal_matrix[0:2, :]
+    lick_matrix = lick_matrix[0:2, :]
 
     fig, axs = plt.subplots(1, 1, figsize=(8, 6))
     axs.plot(lick_matrix[trial_num, :])
@@ -1043,7 +1050,8 @@ def main(run_gradient_descent=False, run_plot_training_loss=False, run_plot_sigm
         plot_sigmoid_comparisions(training_savepath, figsavepath=figsavepath)
 
     if run_plot_time_shift_test is True:
-        plot_time_shift_test(datapath, param=[10, 0.5], time_shift_list=[0, 1], trial_num=0)
+        for trial_num in np.arange(0, 5):
+            plot_time_shift_test(datapath, param=[10, 0.5], time_shift_list=[0, -10], trial_num=trial_num)
 
 
 if __name__ == "__main__":
