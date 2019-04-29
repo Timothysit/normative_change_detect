@@ -353,7 +353,7 @@ def gradient_descent_fit_vector(exp_data_path, training_savepath, init_param_val
         pkl.dump(training_result, handle)
 
 
-def create_vectorised_data(exp_data_path):
+def create_vectorised_data(exp_data_path, subset_trials=None):
     # LOADING DATA
     with open(exp_data_path, "rb") as handle:
         exp_data = pkl.load(handle)
@@ -425,6 +425,7 @@ def gradient_descent_fit_vector_faster(exp_data_path, training_savepath, init_pa
     config.update("jax_debug_nans", True) # nan debugging
 
     for time_shift in tqdm(time_shift_list):
+        print("Time shift: ", str(time_shift))
 
         step_size = 0.01
         momentum_mass = 0.4
@@ -504,6 +505,7 @@ def gradient_descent_fit_vector_faster(exp_data_path, training_savepath, init_pa
 
 
 def predict_lick(param_vals, signal):
+    # NOTE: This function also depends on the global parameter "time_shift"
 
     # impose some hard boundaries
 
@@ -511,10 +513,11 @@ def predict_lick(param_vals, signal):
     p_lick = apply_cost_benefit(change_posterior=posterior, true_positive=1.0, true_negative=0.0,
                                 false_negative=0.0, false_positive=0.0) # param_vals[1]
     p_lick = apply_strategy(p_lick, k=param_vals[0], midpoint=param_vals[1])
-    baseline = 0.01
     # Add time shift
-    # p_lick = np.concatenate([np.repeat(baseline, time_shift), p_lick])
-    # p_lick = p_lick[0:len(actual_lick_vector)]  # clip p(lick) to be same length as actual lick
+    if time_shift > 0:
+        baseline = 0.88888888 # nan placeholder
+        p_lick = np.concatenate([np.repeat(baseline, time_shift), p_lick])
+        p_lick = p_lick[0:len(signal.flatten())]  # clip p(lick) to be same length as actual lick
 
     return p_lick
 
@@ -600,16 +603,18 @@ def cross_entropy_loss(actual_lick_vector, p_lick):
 
 def matrix_cross_entropy_loss(lick_matrix, prediction_matrix):
     mask = np.where(lick_matrix == 99, 0, 1)
+    prediction_matrix_mask = np.where(prediction_matrix == 0.88888888, 0, 1)
     cross_entropy = - ((lick_matrix * np.log(prediction_matrix)) + (1 - lick_matrix) * np.log(1-prediction_matrix))
-    cross_entropy = cross_entropy * mask
+    cross_entropy = cross_entropy * mask * prediction_matrix_mask
 
     return np.nansum(cross_entropy)  # nansum is just a quick fix, likely need to be more principled...
 
 
 def matrix_weighted_cross_entropy_loss(lick_matrix, prediction_matrix, alpha=1):
     mask = np.where(lick_matrix == 99, 0, 1)
+    prediction_matrix_mask = np.where(prediction_matrix == 0.88888888, 0, 1)
     cross_entropy = -(alpha * lick_matrix * np.log(prediction_matrix) + (1 - lick_matrix) * np.log(1-prediction_matrix))
-    cross_entropy = cross_entropy * mask
+    cross_entropy = cross_entropy * mask * prediction_matrix_mask
 
     return np.sum(cross_entropy)
 
@@ -952,16 +957,44 @@ def plot_sigmoid_comparisions(training_savepath, figsavepath=None):
     plt.show()
 
 
-def main():
+def plot_time_shift_test(exp_data_path, param=[10, 0.5], time_shift_list=[0, 1], trial_num=0):
+
+    signal_matrix, lick_matrix = create_vectorised_data(exp_data_path)
+
+    # subset to smaller size to compute faster
+    signal_matrix = signal_matrix[0:10, :]
+    lick_matrix = lick_matrix[0:10, :]
+
+    fig, axs = plt.subplots(1, 1, figsize=(8, 6))
+    axs.plot(lick_matrix[trial_num, :])
+
+    global time_shift
+    for time_shift in time_shift_list:
+        batched_predict_lick = vmap(predict_lick, in_axes=(None, 0))
+        prediction_matrix = batched_predict_lick(param, signal_matrix)
+        batch_loss = matrix_cross_entropy_loss(lick_matrix, prediction_matrix)
+
+        axs.plot(prediction_matrix[trial_num, :])
+        print("Loss: ", str(batch_loss))
+
+    plt.show()
+
+
+
+def main(run_gradient_descent=False, run_plot_training_loss=False, run_plot_sigmoid=False, run_plot_test_loss=False,
+         run_model=False, run_plot_time_shift_test=False):
     # datapath = "/media/timothysit/180C-2DDD/second_rotation_project/exp_data/subsetted_data/data_IO_083.pkl"
-    model_number = 22
+    model_number = 24
     exp_data_number = 83
     main_folder = os.path.join(home, "Dropbox/notes/Projects/second_rotation_project/normative_model")
     # TODO: generalise the code below
     datapath = os.path.join(main_folder, "exp_data/subsetted_data/data_IO_083.pkl")
-    model_save_path = os.path.join(home, "Dropbox/notes/Projects/second_rotation_project/normative_model/hmm_data/model_response_083_22.pkl")
-    fig_save_path = os.path.join(home, "Dropbox/notes/Projects/second_rotation_project/normative_model/figures/model_response_083_22.png")
-    training_savepath = os.path.join(home, "Dropbox/notes/Projects/second_rotation_project/normative_model/hmm_data/training_result_083_22.pkl")
+    model_save_path = os.path.join(home, "Dropbox/notes/Projects/second_rotation_project/normative_model/hmm_data/model_response_0" + str(exp_data_number) + "_"
+                                   + str(model_number) + ".pkl")
+    fig_save_path = os.path.join(home, "Dropbox/notes/Projects/second_rotation_project/normative_model/figures/model_response_0" + str(exp_data_number) + "_"
+                                   + str(model_number) + ".png")
+    training_savepath = os.path.join(home, "Dropbox/notes/Projects/second_rotation_project/normative_model/hmm_data/training_result_0" + str(exp_data_number) + "_"
+                                   + str(model_number) + ".pkl")
 
     """
     param: 
@@ -975,7 +1008,9 @@ def main():
     # simple_gradient_descent(datapath, num_epoch=100, param_vals = np.array([9.59, 0.27, 0.37]),
     #                         training_savepath=training_savepath)
     # plot_training_result(training_savepath)
-    run_through_dataset_fit_vector(datapath=datapath, savepath=model_save_path, param=[6.5, 1.39])
+
+    if run_model is True:
+        run_through_dataset_fit_vector(datapath=datapath, savepath=model_save_path, param=[3.46, 1.61])
 
 
     # compare_model_with_behaviour(model_behaviour_df_path=model_save_path, savepath=fig_save_path, showfig=True)
@@ -985,26 +1020,33 @@ def main():
     #                             init_param_vals=np.array([10.0, 0.0, 0.5]),
     #                             time_shift_list=np.arange(0, 5), num_epoch=10)
 
-    # gradient_descent_fit_vector_faster(exp_data_path=datapath,
-    #                                   training_savepath=training_savepath,
-    #                                   init_param_vals=np.array([10.0, 0.5]),
-    #                                   time_shift_list=np.arange(0, 1), num_epoch=200)
+    if run_gradient_descent is True:
+        gradient_descent_fit_vector_faster(exp_data_path=datapath,
+                                           training_savepath=training_savepath,
+                                           init_param_vals=np.array([10.0, 0.5]),
+                                           time_shift_list=np.arange(1, 2), num_epoch=10)
 
 
 
     # test_vectorised_inference(exp_data_path=datapath)
 
-    # figsavepath = os.path.join(home, "Dropbox/notes/Projects/second_rotation_project/normative_model/figures/test_alpha.png")
-    # test_loss_function(datapath, plot_example=False, savepath=figsavepath)
+    if run_plot_test_loss is True:
+        figsavepath = os.path.join(home, "Dropbox/notes/Projects/second_rotation_project/normative_model/figures/test_alpha_model_" + str(model_number) + ".png")
+        test_loss_function(datapath, plot_example=False, savepath=figsavepath)
 
-    # figsavepath = os.path.join(main_folder, "figures/training_result_model" + str(model_number))
-    # plot_training_loss(training_savepath, figsavepath=figsavepath)
+    if run_plot_training_loss is True:
+        figsavepath = os.path.join(main_folder, "figures/training_result_model" + str(model_number))
+        plot_training_loss(training_savepath, figsavepath=figsavepath)
 
-    # figsavepath = os.path.join(main_folder, "figures/transfer_function_model" + str(model_number))
-    # plot_sigmoid_comparisions(training_savepath, figsavepath=figsavepath)
+    if run_plot_sigmoid is True:
+        figsavepath = os.path.join(main_folder, "figures/transfer_function_model" + str(model_number))
+        plot_sigmoid_comparisions(training_savepath, figsavepath=figsavepath)
 
+    if run_plot_time_shift_test is True:
+        plot_time_shift_test(datapath, param=[10, 0.5], time_shift_list=[0, 1], trial_num=0)
 
 
 if __name__ == "__main__":
-    main()
+    main(run_gradient_descent=False, run_plot_training_loss=False, run_plot_sigmoid=False,
+         run_plot_test_loss=False, run_model=False, run_plot_time_shift_test=True)
 
