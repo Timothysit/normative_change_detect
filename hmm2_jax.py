@@ -59,8 +59,6 @@ def forward_inference(x):
     # transition_matrix = np.array([[1 - hazard_rate, hazard_rate],
     #                               [0, 1]])
 
-
-
     # List to store the posterior: p(z_k | x_{1:k}) for k = 1, ..., n
     p_z_given_x = np.zeros((len(x), 6)) # this will be a n x M matrix, not sure if this is can be created without array assignment..
     p_change_given_x = list()
@@ -155,6 +153,49 @@ def forward_inference_w_tricks(x):
     return np.array(p_change_given_x)
     # return p_xk_given_z_store
 
+def forward_inference_custom_transition_matrix(x):
+    """
+    :param transtiion_matrix_list: global variable with list of transition matrices
+    :param x: signal to predict
+    :return:
+    """
+
+    p_z1_given_x = list()
+    p_z2_given_x = list()
+
+    init_state_probability = np.array([1.0, 0.0, 0.0, 0.0, 0.0, 0.0])
+
+    # List to store the posterior: p(z_k | x_{1:k}) for k = 1, ..., n
+    p_z_given_x = np.zeros((len(x), 6)) # this will be a n x M matrix, not sure if this is can be created without array assignment..
+    p_change_given_x = list()
+    p_baseline_given_x = list()
+    # p_xk_given_z_store = np.zeros((len(x), 6))
+
+    # Initial probabilities
+    p_z_and_x = cal_p_x_given_z(x_k=x[0]) * init_state_probability
+    p_z_given_x = p_z_and_x / np.sum(p_z_and_x)
+
+
+    # add the initial probability to the output list
+    p_change_given_x.append(0)
+
+    # Loop through the rest of the samples to compute P(x_k, z_k) for each
+    for k in np.arange(1, len(x)):
+        p_xk_given_z = cal_p_x_given_z(x_k=x[k])
+
+        # update conditional probability
+        p_z_and_x = np.dot((p_xk_given_z * p_z_given_x), transition_matrix_list[k-1])
+
+        # NOTE: This step is not the conventional forward algorithm, but works.
+        # p_z_given_x[k, :] = p_z_and_x / np.sum(p_z_and_x)
+        # p_zk_given_xk = p_z_and_x / np.sum(p_z_and_x)
+        p_z_given_x = np.divide(p_z_and_x, np.sum(p_z_and_x))
+
+        p_change_given_x.append(np.sum(p_z_given_x[1:])) # sum from the second element
+        # p_baseline_given_x.append(p_z_given_x[0]) # Just 1 - p_change
+
+    return np.array(p_change_given_x)
+
 
 def apply_cost_benefit(change_posterior, true_positive=1.0, true_negative=1.0, false_negative=1.0, false_positive=1.0):
     """
@@ -244,16 +285,22 @@ def test_on_data(exp_data_file, change_val=1.0):
     # remove aborted trials, and noisless trials
     if change_magnitude is not None:
         # trial_index = np.where((mouse_abort == 0) & (noiseless_trial_type == 0) * (change_magnitude == change_val))[0]
-        trial_index = np.where(change_magnitude == change_val)[0]
+        trial_index = onp.where(change_magnitude == change_val)[0]
     else:
-        trial_index = np.where((mouse_abort == 0) & (noiseless_trial_type == 0))[0]
+        trial_index = onp.where((mouse_abort == 0) & (noiseless_trial_type == 0))[0]
 
     signal = exp_data["ys"].flatten()[trial_index][0][0]
     tau = exp_data["change"][trial_index][0][0]
 
     # print("Signal baseline mean:", )
 
-    p_z_given_x = forward_inference(signal)
+    # p_z_given_x = forward_inference(signal)
+
+
+    # use custom transition matrix
+    global transition_matrix_list
+    _, transition_matrix_list = get_hazard_rate(hazard_rate_type="subjective", datapath=exp_data_file)
+    p_z_given_x = forward_inference_custom_transition_matrix(signal)
 
     # Plot example
     plot_signal_and_inference(signal=signal, tau=tau, prob=p_z_given_x)
@@ -340,10 +387,7 @@ def gradient_descent_fit_vector(exp_data_path, training_savepath, init_param_val
             print("Loss:", loss_val)
 
 
-
-
-
-        final_param_list.append(trained_params)
+        final_param_list.append(params)
 
     training_result = dict()
     training_result["loss"] = loss_val_matrix
@@ -408,7 +452,10 @@ def gradient_descent_fit_vector_faster(exp_data_path, training_savepath, init_pa
     # Define global variables used by loss_function
     global signal_matrix
     global lick_matrix
+    global transition_matrix_list
     signal_matrix, lick_matrix = create_vectorised_data(exp_data_path)
+
+    _, transition_matrix_list = get_hazard_rate(hazard_rate_type="subjective", datapath=exp_data_path)
 
     global time_shift
     # TODO: Think about how to do time shift in this vectorised version
@@ -419,6 +466,8 @@ def gradient_descent_fit_vector_faster(exp_data_path, training_savepath, init_pa
     # define batched prediction function using vmap
     global batched_predict_lick
     batched_predict_lick = vmap(predict_lick, in_axes=(None, 0))
+
+
 
     # print("Initial parameters:", init_param_vals)
 
@@ -509,7 +558,10 @@ def predict_lick(param_vals, signal):
 
     # impose some hard boundaries
 
-    posterior = forward_inference_w_tricks(signal.flatten())
+    # posterior = forward_inference_w_tricks(signal.flatten())
+
+    posterior = forward_inference_custom_transition_matrix(signal.flatten())
+
     p_lick = apply_cost_benefit(change_posterior=posterior, true_positive=1.0, true_negative=0.0,
                                 false_negative=0.0, false_positive=0.0) # param_vals[1]
     p_lick = apply_strategy(p_lick, k=param_vals[0], midpoint=param_vals[1])
@@ -564,11 +616,8 @@ def loss_function_batch(param_vals, batch):
 
     batch_predictions = batched_predict_lick(param_vals, signal)
     # batch_loss = batched_cross_entropy(actual_lick_vector=lick_matrix, p_lick=batch_predictions)
-    # batch_loss = matrix_cross_entropy_loss(lick, batch_predictions)
-    batch_loss = matrix_weighted_cross_entropy_loss(lick, batch_predictions, alpha=2)
-
-
-
+    batch_loss = matrix_cross_entropy_loss(lick, batch_predictions)
+    # batch_loss = matrix_weighted_cross_entropy_loss(lick, batch_predictions, alpha=1)
 
     return batch_loss
 
@@ -680,6 +729,10 @@ def run_through_dataset_fit_vector(datapath, savepath, param):
     :return:
     """
 
+    global time_shift
+    time_shift = 0
+
+
     with open(datapath, "rb") as handle:
         exp_data = pkl.load(handle)
 
@@ -690,25 +743,10 @@ def run_through_dataset_fit_vector(datapath, savepath, param):
     absolute_decision_time = exp_data["rt"].flatten()
     # peri_stimulus_rt = absolute_decision_time - tau
 
-    # Experimental data
-    # mouse_hit = (exp_data["outcome"] == "Hit").astype(float).flatten()
-    # mouse_FA = (exp_data["outcome"] == "FA").astype(float).flatten()
-    # mouse_lick = np.any([mouse_hit, mouse_FA], axis=0).astype(float).flatten()
 
-    # lick_choice_vector = list()
-
-    """
-    for signal in tqdm(signals):
-        signal = signal.reshape(-1, 1)
-
-        # posterior = forward_inference(signal.flatten())
-        # lick_choice = posterior_to_decision(posterior, return_prob=True, k=param[0], midpoint=param[1])
-        lick_choice = predict_lick(param_vals=param, signal=signal)
-
-        lick_choice_vector.append(lick_choice)
-    """
-
-    # considering running the vmap version of
+    # time-varying hazard rate
+    global transition_matrix_list
+    _, transition_matrix_list = get_hazard_rate(hazard_rate_type="subjective", datapath=datapath)
 
     signal_matrix, lick_matrix = create_vectorised_data(datapath)
     batched_predict_lick = vmap(predict_lick, in_axes=(None, 0))
@@ -718,7 +756,6 @@ def run_through_dataset_fit_vector(datapath, savepath, param):
     # prediction_matrix[lick_matrix == 99] = onp.nan
     prediction_matrix = np.where(lick_matrix == 99, onp.nan, prediction_matrix)
 
-    # TODO: Add time shift
 
     vec_dict = dict()
     vec_dict["change_value"] = change
@@ -987,11 +1024,85 @@ def plot_time_shift_test(exp_data_path, param=[10, 0.5], time_shift_list=[0, 1],
     plt.show()
 
 
+def get_hazard_rate(hazard_rate_type="subjective", datapath=None, plot_hazard_rate=False, figsavepath=None):
+    """
+    The way I see it, there is 3 types of varying hazard rate.
+    1. "normative": One specified by the experimental design; the actual distribution where the trial change-times are sampled from
+    2. "experimental": The distribution in the trial change-times
+    3. "subjective": The distribution experienced by the mice
+    :param hazard_rate_type:
+    :param datapath:
+    :return:
+    """
 
-def main(run_gradient_descent=False, run_plot_training_loss=False, run_plot_sigmoid=False, run_plot_test_loss=False,
-         run_model=False, run_plot_time_shift_test=False):
+    with open(datapath, "rb") as handle:
+        exp_data = pkl.load(handle)
+
+    change_time = exp_data["change"].flatten()
+    signal = exp_data["ys"].flatten()
+    num_trial = len(change_time)
+    signal_length_list = list()
+    for s in signal:
+        signal_length_list.append(len(s[0]))
+
+    max_signal_length = max(signal_length_list)
+
+    experimental_hazard_rate = onp.histogram(change_time, range=(0, max_signal_length), bins=max_signal_length)[0]
+    experimental_hazard_rate = experimental_hazard_rate / num_trial
+
+    if hazard_rate_type == "subjective":
+        # get change times
+        # remove change times where the mice did a FA, or a miss
+        outcome = exp_data["outcome"].flatten()
+        hit_index = onp.where(outcome == "Hit")[0]
+        num_subjective_trial = len(hit_index)
+        subjective_change_time = change_time[hit_index]
+        subjective_hazard_rate = onp.histogram(subjective_change_time, range=(0, max_signal_length), bins=max_signal_length)[0]
+
+        # convert from count to proportion (Divide by num_trial or num_subjective_trial?)
+        subjective_hazard_rate = subjective_hazard_rate / num_subjective_trial
+
+        assert len(subjective_hazard_rate) == max_signal_length
+
+        hazard_rate_vec = subjective_hazard_rate
+
+    elif hazard_rate_type == "experimental":
+        hazard_rate_vec = experimental_hazard_rate
+    elif hazard_rate_type == "normative":
+        pass
+
+    if plot_hazard_rate is True:
+        fig, ax = plt.subplots(1, 1, figsize=(8, 6))
+        ax.plot(subjective_hazard_rate, label="Subjective hazard rate")
+        ax.plot(experimental_hazard_rate, label="Experiment hazard rate")
+
+        ax.set_xlabel("Time (frames)")
+        ax.set_ylabel("P(change)")
+        ax.legend(frameon=False)
+        ax.spines["top"].set_visible(False)
+        ax.spines["right"].set_visible(False)
+
+        if figsavepath is not None:
+            plt.savefig(figsavepath, dpi=300)
+        plt.show()
+
+    # Make the transition matrix based on hazard_rate_vec
+    transition_matrix_list = list()
+    for hazard_rate in hazard_rate_vec:
+        transition_matrix = np.array([[1 - hazard_rate, hazard_rate/5.0, hazard_rate/5.0, hazard_rate/5.0, hazard_rate/5.0, hazard_rate/5.0],
+                                  [0, 1, 0, 0, 0, 0],
+                                  [0, 0, 1, 0, 0, 0],
+                                  [0, 0, 0, 1, 0, 0],
+                                  [0, 0, 0, 0, 1, 0],
+                                  [0, 0, 0, 0, 0, 1]])
+        transition_matrix_list.append(transition_matrix)
+
+    return hazard_rate_vec, transition_matrix_list
+
+def main(run_test_foward_algorithm=False, run_test_on_data=False, run_gradient_descent=False, run_plot_training_loss=False, run_plot_sigmoid=False, run_plot_test_loss=False,
+         run_model=False, run_plot_time_shift_test=False, run_plot_hazard_rate=False):
     # datapath = "/media/timothysit/180C-2DDD/second_rotation_project/exp_data/subsetted_data/data_IO_083.pkl"
-    model_number = 24
+    model_number = 26
     exp_data_number = 83
     main_folder = os.path.join(home, "Dropbox/notes/Projects/second_rotation_project/normative_model")
     # TODO: generalise the code below
@@ -1010,14 +1121,17 @@ def main(run_gradient_descent=False, run_plot_training_loss=False, run_plot_sigm
     3. midpoint of the sigmoid decision function
     """
 
-    # test_forward_algorithm()
-    # test_on_data(change_val=1.35, exp_data_file=datapath)
+    if run_test_foward_algorithm is True:
+        test_forward_algorithm()
+
+    if run_test_on_data is True:
+        test_on_data(change_val=1.25, exp_data_file=datapath)
     # simple_gradient_descent(datapath, num_epoch=100, param_vals = np.array([9.59, 0.27, 0.37]),
     #                         training_savepath=training_savepath)
     # plot_training_result(training_savepath)
 
     if run_model is True:
-        run_through_dataset_fit_vector(datapath=datapath, savepath=model_save_path, param=[3.46, 1.61])
+        run_through_dataset_fit_vector(datapath=datapath, savepath=model_save_path, param=[3.45, 1.66])
 
 
     # compare_model_with_behaviour(model_behaviour_df_path=model_save_path, savepath=fig_save_path, showfig=True)
@@ -1031,9 +1145,7 @@ def main(run_gradient_descent=False, run_plot_training_loss=False, run_plot_sigm
         gradient_descent_fit_vector_faster(exp_data_path=datapath,
                                            training_savepath=training_savepath,
                                            init_param_vals=np.array([10.0, 0.5]),
-                                           time_shift_list=np.arange(1, 2), num_epoch=10)
-
-
+                                           time_shift_list=np.arange(0, 102, 2), num_epoch=100)
 
     # test_vectorised_inference(exp_data_path=datapath)
 
@@ -1053,8 +1165,14 @@ def main(run_gradient_descent=False, run_plot_training_loss=False, run_plot_sigm
         for trial_num in np.arange(0, 5):
             plot_time_shift_test(datapath, param=[10, 0.5], time_shift_list=[0, -10], trial_num=trial_num)
 
+    if run_plot_hazard_rate is True:
+        figsavepath = os.path.join(main_folder, "figures/hazard_rate_subjective_mouse_" + str(exp_data_number) + ".png")
+        get_hazard_rate(hazard_rate_type="subjective", datapath=datapath, plot_hazard_rate=True,
+                        figsavepath=figsavepath)
+
 
 if __name__ == "__main__":
-    main(run_gradient_descent=False, run_plot_training_loss=False, run_plot_sigmoid=False,
-         run_plot_test_loss=False, run_model=False, run_plot_time_shift_test=True)
+    main(run_test_on_data=False, run_gradient_descent=False, run_plot_training_loss=False, run_plot_sigmoid=False,
+         run_plot_test_loss=False, run_model=False, run_plot_time_shift_test=False,
+         run_plot_hazard_rate=True)
 
