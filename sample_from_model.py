@@ -29,7 +29,8 @@ def sample_from_model(model_data_path, num_samples=1000, plot_check=False, savep
     change_value = model_data["change_value"]
 
     # when change goes from 1.0 to 1.0, there is no change and so change time should be nan
-    actual_change_time = np.where(change_value == 1.0, np.nan, actual_change_time)
+    # actual_change_time = np.where(change_value == 1.0, np.nan, actual_change_time)
+    # ^ No longer valid if this is to be made consistent w/ mouse data
 
     # lists to store things
     prop_lick_list = list()
@@ -245,8 +246,16 @@ def get_mouse_behaviour_df(mouse_behaviour_path, savepath=None):
     # Experimental data
     mouse_dict["mouse_hit"] = (exp_data["outcome"] == "Hit").astype(float).flatten()
     mouse_dict["mouse_FA"] = (exp_data["outcome"] == "FA").astype(float).flatten()
-    mouse_dict["mouse_lick"] = np.any([mouse_dict["mouse_hit"], mouse_dict["mouse_FA"]], axis=0).astype(float).flatten()
+    # below, I use multiplication of two binary vectors in place of the "&" operation
+    mouse_dict["correct_lick"] = (mouse_dict["change"] > 0).astype(float) * mouse_dict["mouse_hit"]
 
+    # TODO: Also look at correct_no_lick
+
+    # "Hit" during no change period is also a lick (as explained by Petr 2019-04-29, see notes)
+    # mouse_dict["mouse_lick"] = mouse_dict["correct_lick"] + mouse_dict["mouse_FA"] # AND operation
+    mouse_dict["mouse_lick"] = mouse_dict["mouse_hit"] + mouse_dict["mouse_FA"]
+
+    # mouse_dict["mouse_lick"] = np.any([mouse_dict["mouse_hit"], mouse_dict["mouse_FA"]], axis=0).astype(float).flatten() # this line is wrong, some hits can be no-licks.
 
     mouse_df = pd.DataFrame.from_dict(mouse_dict)
 
@@ -358,7 +367,7 @@ def compare_distributions(mouse_df_path, model_sample_path=None, savepath=None, 
     plt.show()
 
 
-def main(model_number=20, mouse_number=83, run_sample_from_model=True, run_plot_psychom_metric_comparison=True,
+def main(model_number=20, mouse_number=83, run_get_mouse_df=True, run_sample_from_model=True, run_plot_psychom_metric_comparison=True,
          run_plot_mouse_reaction_time=True,
          run_plot_model_reaction_time=True):
 
@@ -372,9 +381,12 @@ def main(model_number=20, mouse_number=83, run_sample_from_model=True, run_plot_
                                                 str(model_number) + ".pkl")
 
     # Get mouse_df
-    # mouse_behaviour_path = os.path.join(mainfolder, "exp_data/subsetted_data/data_IO_083.pkl")
+
+    mouse_behaviour_path = os.path.join(mainfolder, "exp_data/subsetted_data/data_IO_083.pkl")
     mouse_df_path = os.path.join(mainfolder, "mouse_83_df.pkl")
-    # get_mouse_behaviour_df(mouse_behaviour_path, savepath=mouse_df_path)
+
+    if run_get_mouse_df is True:
+        get_mouse_behaviour_df(mouse_behaviour_path, savepath=mouse_df_path)
 
 
     if run_sample_from_model is True:
@@ -446,6 +458,6 @@ def main(model_number=20, mouse_number=83, run_sample_from_model=True, run_plot_
 
 
 if __name__ == "__main__":
-    main(model_number=22, run_sample_from_model=False, run_plot_psychom_metric_comparison=True,
-         run_plot_mouse_reaction_time=False,
-         run_plot_model_reaction_time=False)
+    main(model_number=25, run_get_mouse_df=True, run_sample_from_model=True, run_plot_psychom_metric_comparison=True,
+         run_plot_mouse_reaction_time=True,
+         run_plot_model_reaction_time=True)
