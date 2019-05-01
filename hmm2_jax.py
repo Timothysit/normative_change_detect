@@ -720,7 +720,7 @@ def loss_function_fit_vector(param_vals):
 
     return cross_entropy_loss
 
-def run_through_dataset_fit_vector(datapath, savepath, training_savepath, param):
+def run_through_dataset_fit_vector(datapath, savepath, training_savepath, param=None, num_non_hazard_rate_param=2):
     """
     Takes in the experimental data, and makes inference of p(lick) for each time point given the stimuli
     :param datapath:
@@ -733,12 +733,12 @@ def run_through_dataset_fit_vector(datapath, savepath, training_savepath, param)
         # if no parameters specified, then load the training result and get the last param
         with open(training_savepath, "rb") as handle:
             training_result = pkl.load(handle)
-    
 
-
+    # normally -1 (last training epoch)
+    param = training_result["param_val"][49] # time shift 0: 0 - 9, time shift 2: 10 - 19
 
     global time_shift
-    time_shift = 0
+    time_shift = 8
 
 
     with open(datapath, "rb") as handle:
@@ -753,16 +753,27 @@ def run_through_dataset_fit_vector(datapath, savepath, training_savepath, param)
 
 
     # time-varying hazard rate
-    global transition_matrix_list
-    _, transition_matrix_list = get_hazard_rate(hazard_rate_type="subjective", datapath=datapath)
+    # _, transition_matrix_list = get_hazard_rate(hazard_rate_type="subjective", datapath=datapath)
+
 
     signal_matrix, lick_matrix = create_vectorised_data(datapath)
-    batched_predict_lick = vmap(predict_lick, in_axes=(None, 0))
+    # batched_predict_lick = vmap(predict_lick, in_axes=(None, 0))
+
+    global num_non_hazard_rate_params
+    num_non_hazard_rate_params = num_non_hazard_rate_param # this is for predict_lick_w_hazard_rate
+
+    batched_predict_lick = vmap(predict_lick_w_hazard_rate, in_axes=(None, 0))
+
 
     # signals has to be specially prepared to get the vectorised code running
     prediction_matrix = batched_predict_lick(param, signal_matrix)
     # prediction_matrix[lick_matrix == 99] = onp.nan
     prediction_matrix = np.where(lick_matrix == 99, onp.nan, prediction_matrix)
+
+    if time_shift != 0:
+        # convert baseline to something sensible
+        baseline_p_lick = 0.001
+        prediction_matrix = np.where(prediction_matrix == 0.88888888, baseline_p_lick, prediction_matrix)
 
 
     vec_dict = dict()
@@ -1246,6 +1257,8 @@ def gradient_descent_w_hazard_rate(exp_data_path, training_savepath, init_param_
     training_result = dict()
     training_result["loss"] = loss_val_list
     training_result["param_val"] = param_list
+    # TODO: Also save the time shift number and epoch number
+
 
     with open(training_savepath, "wb") as handle:
         pkl.dump(training_result, handle)
@@ -1304,15 +1317,68 @@ def plot_trained_hazard_rate(training_savepath, figsavepath, num_non_hazard_rate
         plt.savefig(figsavepath, dpi=300)
 
     plt.show()
-    
+
+
+def benchmark_model(datapath, training_savepath, figsavepath=None):
+
+
+    signal_matrix, lick_matrix = create_vectorised_data(datapath)
+    # Dummy model
+    all_zero_prediction_matrix = onp.zeros(shape=np.shape(lick_matrix))
+    small_value = 0.01
+    all_zero_prediction_matrix[:] = small_value
+
+    with open(training_savepath, "rb") as handle:
+        training_result = pkl.load(handle)
 
 
 
+    loss = training_result["loss"][-1]
+    all_zero_loss = matrix_weighted_cross_entropy_loss(lick_matrix, all_zero_prediction_matrix, alpha=1)
 
-def main(run_test_foward_algorithm=False, run_test_on_data=False, run_gradient_descent=False, run_plot_training_loss=False, run_plot_sigmoid=False, run_plot_test_loss=False,
-         run_model=False, run_plot_time_shift_test=False, run_plot_hazard_rate=False, run_plot_trained_hazard_rate=False):
+    figure, ax = plt.subplots(1, 1, figsize=(8, 6))
+
+    ax.bar(x=[1, 2], height=[all_zero_loss, loss], tick_label=["All " + str(small_value), "Trained model"])
+
+    ax.set_ylabel("Cross entropy loss")
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+
+    if figsavepath is not None:
+        plt.savefig(figsavepath, dpi=300)
+
+    plt.show()
+
+
+def plot_time_shift_training_result(training_savepath, figsavepath=None):
+    with open(training_savepath, "rb") as handle:
+        training_result = pkl.load(handle)
+
+    time_shift_list = np.arange(0, 22, 2)
+    num_step = 10
+    num_epoch_per_step = 10
+    loss = training_result["loss"]
+    final_losses = loss[num_step-1::num_step] # 9th, 19th, etc... (0 indexing)
+
+    fig, ax = plt.subplots(1, 1, figsize=(8, 6))
+    ax.plot(time_shift_list, final_losses)
+    ax.scatter(time_shift_list, final_losses)
+    ax.set_ylabel("Loss at %s-th iteration" % str(num_step * num_epoch_per_step))
+    ax.set_xlabel("Time shift (frames)")
+
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+
+    if figsavepath is not None:
+        plt.savefig(figsavepath, dpi=300)
+
+    plt.show()
+
+
+def main(model_number=99,run_test_foward_algorithm=False, run_test_on_data=False, run_gradient_descent=False, run_plot_training_loss=False, run_plot_sigmoid=False, run_plot_test_loss=False,
+         run_model=False, run_plot_time_shift_test=False, run_plot_hazard_rate=False, run_plot_trained_hazard_rate=False,
+         run_benchmark_model=False, run_plot_time_shift_training_result=False):
     # datapath = "/media/timothysit/180C-2DDD/second_rotation_project/exp_data/subsetted_data/data_IO_083.pkl"
-    model_number = 28
     exp_data_number = 83
     main_folder = os.path.join(home, "Dropbox/notes/Projects/second_rotation_project/normative_model")
     # TODO: generalise the code below
@@ -1341,7 +1407,7 @@ def main(run_test_foward_algorithm=False, run_test_on_data=False, run_gradient_d
     # plot_training_result(training_savepath)
 
     if run_model is True:
-        run_through_dataset_fit_vector(datapath=datapath, savepath=model_save_path, training_savepath, params=None)
+        run_through_dataset_fit_vector(datapath=datapath, savepath=model_save_path, training_savepath=training_savepath, param=None)
 
 
     # compare_model_with_behaviour(model_behaviour_df_path=model_save_path, savepath=fig_save_path, showfig=True)
@@ -1361,7 +1427,7 @@ def main(run_test_foward_algorithm=False, run_test_on_data=False, run_gradient_d
                                            training_savepath=training_savepath,
                                            init_param_vals=np.array([10.0, 0.5]),
                                            n_params=2, fit_hazard_rate=True,
-                                           time_shift_list=np.arange(0, 1), num_epoch=5000)
+                                           time_shift_list=np.arange(0, 22, 2), num_epoch=100)
 
 
 
@@ -1394,9 +1460,18 @@ def main(run_test_foward_algorithm=False, run_test_on_data=False, run_gradient_d
         get_hazard_rate(hazard_rate_type="subjective", datapath=datapath, plot_hazard_rate=True,
                         figsavepath=figsavepath)
 
+    if run_benchmark_model is True:
+        figsavepath = os.path.join(main_folder, "figures/loss_benchmark_model_" + str(model_number) + ".png")
+        benchmark_model(datapath, training_savepath, figsavepath=figsavepath)
+
+    if run_plot_time_shift_training_result is True:
+        figsavepath = os.path.join(main_folder, "figures/time_shift_loss_model_" + str(model_number) + ".png")
+        plot_time_shift_training_result(training_savepath=training_savepath, figsavepath=figsavepath)
+
 
 if __name__ == "__main__":
-    main(run_test_on_data=False, run_gradient_descent=False, run_plot_training_loss=False, run_plot_sigmoid=False,
-         run_plot_test_loss=False, run_model=True, run_plot_time_shift_test=False,
-         run_plot_hazard_rate=False, run_plot_trained_hazard_rate=False)
+    main(model_number=30, run_test_on_data=False, run_gradient_descent=False, run_plot_training_loss=False, run_plot_sigmoid=False,
+         run_plot_test_loss=False, run_model=False, run_plot_time_shift_test=False,
+         run_plot_hazard_rate=False, run_plot_trained_hazard_rate=False, run_benchmark_model=False,
+         run_plot_time_shift_training_result=False)
 
