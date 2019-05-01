@@ -471,7 +471,8 @@ def gradient_descent_fit_vector_faster(exp_data_path, training_savepath, init_pa
 
     # print("Initial parameters:", init_param_vals)
 
-    config.update("jax_debug_nans", True) # nan debugging
+    # config.update("jax_debug_nans", True) # nan debugging
+    # TURN THIS OFF IF NOT DEBUGGING (CAUSES SLOWDOWNS)
 
     for time_shift in tqdm(time_shift_list):
         print("Time shift: ", str(time_shift))
@@ -613,7 +614,6 @@ def loss_function_batch(param_vals, batch):
     """
     signal, lick = batch
 
-
     batch_predictions = batched_predict_lick(param_vals, signal)
     # batch_loss = batched_cross_entropy(actual_lick_vector=lick_matrix, p_lick=batch_predictions)
     batch_loss = matrix_cross_entropy_loss(lick, batch_predictions)
@@ -720,7 +720,7 @@ def loss_function_fit_vector(param_vals):
 
     return cross_entropy_loss
 
-def run_through_dataset_fit_vector(datapath, savepath, param):
+def run_through_dataset_fit_vector(datapath, savepath, training_savepath, param):
     """
     Takes in the experimental data, and makes inference of p(lick) for each time point given the stimuli
     :param datapath:
@@ -728,6 +728,14 @@ def run_through_dataset_fit_vector(datapath, savepath, param):
     :param param:
     :return:
     """
+
+    if param is None:
+        # if no parameters specified, then load the training result and get the last param
+        with open(training_savepath, "rb") as handle:
+            training_result = pkl.load(handle)
+    
+
+
 
     global time_shift
     time_shift = 0
@@ -1099,10 +1107,212 @@ def get_hazard_rate(hazard_rate_type="subjective", datapath=None, plot_hazard_ra
 
     return hazard_rate_vec, transition_matrix_list
 
+
+def make_transition_matrix(hazard_rate_vec):
+    # standard logistic function to contrain values to [0, 1]
+    hazard_rate_vec = standard_sigmoid(hazard_rate_vec)
+    transition_matrix_list = list()
+    for hazard_rate in hazard_rate_vec:
+        transition_matrix = np.array([[1 - hazard_rate, hazard_rate/5.0, hazard_rate/5.0, hazard_rate/5.0, hazard_rate/5.0, hazard_rate/5.0],
+                                  [0, 1, 0, 0, 0, 0],
+                                  [0, 0, 1, 0, 0, 0],
+                                  [0, 0, 0, 1, 0, 0],
+                                  [0, 0, 0, 0, 1, 0],
+                                  [0, 0, 0, 0, 0, 1]])
+        transition_matrix_list.append(transition_matrix)
+
+    return transition_matrix_list
+
+#################################### FITTING HAZARD RATE ETC. #########################################################
+
+def gradient_descent_w_hazard_rate(exp_data_path, training_savepath, init_param_vals=np.array([10.0, 0.5]),
+                                time_shift_list=np.arange(0, 5), num_epoch=10, fit_hazard_rate=True,
+                                   n_params=2):
+    """
+
+    :return:
+    """
+    global num_non_hazard_rate_params
+    num_non_hazard_rate_params = n_params
+
+
+
+    # Define global variables used by loss_function
+    global signal_matrix
+    global lick_matrix
+    signal_matrix, lick_matrix = create_vectorised_data(exp_data_path)
+
+    hazard_rate,_ = get_hazard_rate(hazard_rate_type="subjective", datapath=exp_data_path)
+    
+    # random initialisation
+    # key = random.PRNGKey(777)
+    # hazard_rate_random = random.normal(key, shape=(len(hazard_rate), ))
+    # hazard_rate = np.where(hazard_rate==0, 0.001, hazard_rate)
+
+    init_param_vals = np.concatenate([init_param_vals, hazard_rate])
+
+    global time_shift
+
+    # loss_val_matrix = onp.zeros((num_epoch, len(time_shift_list)))
+    param_list = list() # list of list, each list is the parameter values for a particular time shift
+    loss_val_list = list()
+    # define batched prediction function using vmap
+    global batched_predict_lick
+    # batched_predict_lick = vmap(predict_lick, in_axes=(None, 0))
+    batched_predict_lick = vmap(predict_lick_w_hazard_rate, in_axes=(None, 0))
+
+
+    # print("Initial parameters:", init_param_vals)
+
+    # config.update("jax_debug_nans", True) # nan debugging
+    # COMMENT OUT UNLESS DEBUGGING; it causes slowdowns.
+
+    for time_shift in tqdm(time_shift_list):
+        print("Time shift: ", str(time_shift))
+
+        step_size = 0.01
+        momentum_mass = 0.4
+        # opt_init, opt_update = optimizers.momentum(step_size, mass=momentum_mass)
+        opt_init, opt_update = optimizers.adam(step_size, b1=0.9, b2=0.999, eps=1e-8)
+
+        """
+        @jit
+        def update(i, opt_state):
+            params = optimizers.get_params(opt_state)
+            return opt_update(i, grad(loss_function_fit_vector_faster)(params), opt_state)
+        """
+
+        itercount = itertools.count()
+        """
+        for epoch in range(num_epoch):
+            opt_state = update(next(itercount), opt_state)
+            params = optimizers.get_params(opt_state)
+            loss_val = loss_function_fit_vector_faster(params)
+            print("Loss:", loss_val)
+            print("Parameters:", params)
+            param_list.append(params)
+            loss_val_list.append(loss_val)
+        """
+
+        # Test loss function
+        # loss_val = loss_function_batch(init_param_vals, (signal_matrix, lick_matrix))
+        # print("Loss:", loss_val)
+
+
+        # Minibatch gradient descent
+
+        num_train = onp.shape(signal_matrix)[0]
+        batch_size = 128
+        num_complete_batches, leftover = divmod(num_train, batch_size)
+        num_batches = num_complete_batches + bool(leftover)
+
+        def data_stream():
+            rng = npr.RandomState(0)
+            while True:
+                perm = rng.permutation(num_train)
+                for i in range(num_batches):
+                    batch_idx = perm[i * batch_size:(i + 1) * batch_size]
+                    yield signal_matrix[batch_idx, :], lick_matrix[batch_idx, :]
+        batches = data_stream()
+
+
+        opt_state = opt_init(init_param_vals)
+
+        @jit
+        def step(i, opt_state, batch):
+            params = optimizers.get_params(opt_state)
+            # print("Params within step:", params)
+            # g = grad(loss_function_fit_vector_faster)(params)
+            g = grad(loss_function_batch)(params, batch)
+            return opt_update(i, g, opt_state)
+
+        for epoch in range(num_epoch):
+            # print("Epoch: ", str(epoch))
+            for _ in range(num_batches):
+                opt_state = step(epoch, opt_state, next(batches))
+
+            if epoch % 10 == 0:
+                params = optimizers.get_params(opt_state)
+                # print("Parameters", params)
+                # loss_val = loss_function_fit_vector_faster(params)
+                loss_val = loss_function_batch(params, (signal_matrix, lick_matrix))
+                print("Loss:", loss_val)
+                loss_val_list.append(loss_val)
+                param_list.append(params)
+                # print("Parameters:", params)
+
+                # TODO: Write function to auto-stop on convergence
+
+    training_result = dict()
+    training_result["loss"] = loss_val_list
+    training_result["param_val"] = param_list
+
+    with open(training_savepath, "wb") as handle:
+        pkl.dump(training_result, handle)
+
+def standard_sigmoid(input):
+    output = 1 / (1 + np.exp(-input))
+    return output
+
+
+def predict_lick_w_hazard_rate(param_vals, signal):
+    # NOTE: This function also depends on the global parameter "time_shift"
+
+    # impose some hard boundaries
+
+    # posterior = forward_inference_w_tricks(signal.flatten())
+    global transition_matrix_list
+    transition_matrix_list = make_transition_matrix(hazard_rate_vec=param_vals[num_non_hazard_rate_params:])
+    # ^ note this works due to zero-indexing. (if num=2, then we start from index 2, which is the 3rd param)
+
+    posterior = forward_inference_custom_transition_matrix(signal.flatten())
+
+    p_lick = apply_cost_benefit(change_posterior=posterior, true_positive=1.0, true_negative=0.0,
+                                false_negative=0.0, false_positive=0.0) # param_vals[1]
+    p_lick = apply_strategy(p_lick, k=param_vals[0], midpoint=param_vals[1])
+    # Add time shift
+    if time_shift > 0:
+        baseline = 0.88888888 # nan placeholder
+        p_lick = np.concatenate([np.repeat(baseline, time_shift), p_lick])
+        p_lick = p_lick[0:len(signal.flatten())]  # clip p(lick) to be same length as actual lick
+    elif time_shift < 0:
+        # backward shift
+        baseline = 0.88888888  # nan placeholder
+        p_lick = np.concatenate([p_lick, np.repeat(baseline, abs(time_shift))])
+        p_lick = p_lick[abs(time_shift):(len(signal.flatten()) + abs(time_shift))]
+
+    return p_lick
+
+
+def plot_trained_hazard_rate(training_savepath, figsavepath, num_non_hazard_rate_param=2):
+    with open(training_savepath, "rb") as handle:
+        training_result = pkl.load(handle)
+
+    last_epoch_trained_param = training_result["param_val"][-1]
+    hazard_rate = last_epoch_trained_param[num_non_hazard_rate_param:]
+
+    fig, ax = plt.subplots(1, 1, figsize=(8, 6))
+    ax.plot(standard_sigmoid(hazard_rate))
+    ax.set_xlabel("Time (frames")
+    ax.set_ylabel("P(change)")
+
+    ax.spines["right"].set_visible(False)
+    ax.spines["top"].set_visible(False)
+
+
+    if figsavepath is not None:
+        plt.savefig(figsavepath, dpi=300)
+
+    plt.show()
+    
+
+
+
+
 def main(run_test_foward_algorithm=False, run_test_on_data=False, run_gradient_descent=False, run_plot_training_loss=False, run_plot_sigmoid=False, run_plot_test_loss=False,
-         run_model=False, run_plot_time_shift_test=False, run_plot_hazard_rate=False):
+         run_model=False, run_plot_time_shift_test=False, run_plot_hazard_rate=False, run_plot_trained_hazard_rate=False):
     # datapath = "/media/timothysit/180C-2DDD/second_rotation_project/exp_data/subsetted_data/data_IO_083.pkl"
-    model_number = 26
+    model_number = 28
     exp_data_number = 83
     main_folder = os.path.join(home, "Dropbox/notes/Projects/second_rotation_project/normative_model")
     # TODO: generalise the code below
@@ -1131,7 +1341,7 @@ def main(run_test_foward_algorithm=False, run_test_on_data=False, run_gradient_d
     # plot_training_result(training_savepath)
 
     if run_model is True:
-        run_through_dataset_fit_vector(datapath=datapath, savepath=model_save_path, param=[3.45, 1.66])
+        run_through_dataset_fit_vector(datapath=datapath, savepath=model_save_path, training_savepath, params=None)
 
 
     # compare_model_with_behaviour(model_behaviour_df_path=model_save_path, savepath=fig_save_path, showfig=True)
@@ -1142,10 +1352,19 @@ def main(run_test_foward_algorithm=False, run_test_on_data=False, run_gradient_d
     #                             time_shift_list=np.arange(0, 5), num_epoch=10)
 
     if run_gradient_descent is True:
-        gradient_descent_fit_vector_faster(exp_data_path=datapath,
+        # gradient_descent_fit_vector_faster(exp_data_path=datapath,
+        #                                    training_savepath=training_savepath,
+        #                                    init_param_vals=np.array([10.0, 0.5]),
+        #                                    time_shift_list=np.arange(0, 102, 2), num_epoch=100)
+
+        gradient_descent_w_hazard_rate(exp_data_path=datapath,
                                            training_savepath=training_savepath,
                                            init_param_vals=np.array([10.0, 0.5]),
-                                           time_shift_list=np.arange(0, 102, 2), num_epoch=100)
+                                           n_params=2, fit_hazard_rate=True,
+                                           time_shift_list=np.arange(0, 1), num_epoch=5000)
+
+
+
 
     # test_vectorised_inference(exp_data_path=datapath)
 
@@ -1161,6 +1380,11 @@ def main(run_test_foward_algorithm=False, run_test_on_data=False, run_gradient_d
         figsavepath = os.path.join(main_folder, "figures/transfer_function_model" + str(model_number))
         plot_sigmoid_comparisions(training_savepath, figsavepath=figsavepath)
 
+    if run_plot_trained_hazard_rate is True:
+        figsavepath = os.path.join(main_folder, "figures/trained_hazard_rate" + str(model_number))
+        plot_trained_hazard_rate(training_savepath, figsavepath=figsavepath)
+
+
     if run_plot_time_shift_test is True:
         for trial_num in np.arange(0, 5):
             plot_time_shift_test(datapath, param=[10, 0.5], time_shift_list=[0, -10], trial_num=trial_num)
@@ -1173,6 +1397,6 @@ def main(run_test_foward_algorithm=False, run_test_on_data=False, run_gradient_d
 
 if __name__ == "__main__":
     main(run_test_on_data=False, run_gradient_descent=False, run_plot_training_loss=False, run_plot_sigmoid=False,
-         run_plot_test_loss=False, run_model=False, run_plot_time_shift_test=False,
-         run_plot_hazard_rate=True)
+         run_plot_test_loss=False, run_model=True, run_plot_time_shift_test=False,
+         run_plot_hazard_rate=False, run_plot_trained_hazard_rate=False)
 
