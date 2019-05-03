@@ -397,7 +397,7 @@ def gradient_descent_fit_vector(exp_data_path, training_savepath, init_param_val
         pkl.dump(training_result, handle)
 
 
-def create_vectorised_data(exp_data_path, subset_trials=None, lick_exponential_decay=False):
+def create_vectorised_data(exp_data_path, subset_trials=None, lick_exponential_decay=False, decay_constant=0.5):
     """
     Create a matrix from signal and lick vectors of unequal length so that computations can be vectorised.
     :param exp_data_path:
@@ -443,19 +443,15 @@ def create_vectorised_data(exp_data_path, subset_trials=None, lick_exponential_d
     for trial in np.arange(0, len(mouse_rt)):
         if not onp.isnan(mouse_rt[trial]):
             mouse_lick_vector = onp.zeros(shape=(int(mouse_rt[trial]), ))
-            mouse_lick_vector[int(mouse_rt[trial] - 1)] = 1
+            mouse_lick_vector[int(mouse_rt[trial] - 1)] = 1 # note the zero-indexing
+            if lick_exponential_decay is True:
+                # TODO: Plot this in a separate block, there is wasted computational time upstairs.
+                time_before_lick = np.arange(0, int(mouse_rt[trial] - 1))
+                exp_lick = np.exp(-decay_constant * time_before_lick)
+                mouse_lick_vector = np.flipud(exp_lick)
         else:
             mouse_lick_vector = onp.zeros(shape=(len(signal[trial][0])), )
         lick_matrix[trial, :len(mouse_lick_vector)] = mouse_lick_vector
-
-    if lick_exponential_decay is True:
-        decay_constant = 2
-        exp_lick = np.exp(-decay_constant * time_before_lick)
-
-
-
-
-
 
     return signal_matrix, lick_matrix
 
@@ -470,7 +466,11 @@ def gradient_descent_fit_vector_faster(exp_data_path, training_savepath, init_pa
     global signal_matrix
     global lick_matrix
     global transition_matrix_list
-    signal_matrix, lick_matrix = create_vectorised_data(exp_data_path)
+    # signal_matrix, lick_matrix = create_vectorised_data(exp_data_path)
+
+    # USING EXPONENTIAL DECAY
+    signal_matrix, lick_matrix = create_vectorised_data(exp_data_path,
+                                                        lick_exponential_decay=True, decay_constant=0.5)
 
     _, transition_matrix_list = get_hazard_rate(hazard_rate_type="subjective", datapath=exp_data_path)
 
@@ -634,7 +634,7 @@ def loss_function_batch(param_vals, batch):
     batch_predictions = batched_predict_lick(param_vals, signal)
     # batch_loss = batched_cross_entropy(actual_lick_vector=lick_matrix, p_lick=batch_predictions)
     # batch_loss = matrix_cross_entropy_loss(lick, batch_predictions)
-    batch_loss = matrix_weighted_cross_entropy_loss(lick, batch_predictions, alpha=2)
+    batch_loss = matrix_weighted_cross_entropy_loss(lick, batch_predictions, alpha=1)
 
     return batch_loss
 
@@ -1208,7 +1208,11 @@ def gradient_descent_w_hazard_rate(exp_data_path, training_savepath, init_param_
     # Define global variables used by loss_function
     global signal_matrix
     global lick_matrix
-    signal_matrix, lick_matrix = create_vectorised_data(exp_data_path)
+
+    # signal_matrix, lick_matrix = create_vectorised_data(exp_data_path)
+    # Lick now has exponential decay.
+    signal_matrix, lick_matrix = create_vectorised_data(exp_data_path,
+                                                        lick_exponential_decay=True, decay_constant=0.5)
 
     hazard_rate,_ = get_hazard_rate(hazard_rate_type="subjective", datapath=exp_data_path)
     
@@ -1535,15 +1539,15 @@ def main(model_number=99,run_test_foward_algorithm=False, run_test_on_data=False
 
     if run_gradient_descent is True:
         # gradient_descent_fit_vector_faster(exp_data_path=datapath,
-        #                                    training_savepath=training_savepath,
-        #                                    init_param_vals=np.array([10.0, 0.5]),
-        #                                    time_shift_list=np.arange(0, 102, 2), num_epoch=100)
+        #                                     training_savepath=training_savepath,
+        #                                     init_param_vals=np.array([10.0, 0.5]),
+        #                                     time_shift_list=np.arange(0, 102, 2), num_epoch=100)
 
         gradient_descent_w_hazard_rate(exp_data_path=datapath,
-                                           training_savepath=training_savepath,
-                                           init_param_vals=np.array([10.0, 0.5]),
-                                           n_params=2, fit_hazard_rate=True,
-                                           time_shift_list=np.arange(0, 1), num_epoch=1000)
+                                            training_savepath=training_savepath,
+                                            init_param_vals=np.array([10.0, 0.5]),
+                                            n_params=2, fit_hazard_rate=True,
+                                           time_shift_list=np.arange(0, 1), num_epoch=300)
 
         # sim 32:  time_shift_list=np.arange(0, 22, 2), num_epoch=200
 
@@ -1593,9 +1597,9 @@ def main(model_number=99,run_test_foward_algorithm=False, run_test_on_data=False
 
 
 if __name__ == "__main__":
-    main(model_number=999, run_test_on_data=False, run_gradient_descent=False, run_plot_training_loss=False,
+    main(model_number=33, run_test_on_data=False, run_gradient_descent=True, run_plot_training_loss=False,
          run_plot_sigmoid=False,
          run_plot_test_loss=False, run_model=False, run_plot_time_shift_test=False,
          run_plot_hazard_rate=False, run_plot_trained_hazard_rate=False, run_benchmark_model=False,
-         run_plot_time_shift_training_result=False, run_plot_posterior=False, run_control_model=True)
+         run_plot_time_shift_training_result=False, run_plot_posterior=False, run_control_model=False)
 
