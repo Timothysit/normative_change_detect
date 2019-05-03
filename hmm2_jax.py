@@ -397,7 +397,15 @@ def gradient_descent_fit_vector(exp_data_path, training_savepath, init_param_val
         pkl.dump(training_result, handle)
 
 
-def create_vectorised_data(exp_data_path, subset_trials=None):
+def create_vectorised_data(exp_data_path, subset_trials=None, lick_exponential_decay=False):
+    """
+    Create a matrix from signal and lick vectors of unequal length so that computations can be vectorised.
+    :param exp_data_path:
+    :param subset_trials:
+    :param lick_exponential_decay: If true, then lick vector will be an exponential decay function starting
+    at the point of lick and decaying backwards in time. This may help the model fit better.
+    :return:
+    """
     # LOADING DATA
     with open(exp_data_path, "rb") as handle:
         exp_data = pkl.load(handle)
@@ -439,6 +447,15 @@ def create_vectorised_data(exp_data_path, subset_trials=None):
         else:
             mouse_lick_vector = onp.zeros(shape=(len(signal[trial][0])), )
         lick_matrix[trial, :len(mouse_lick_vector)] = mouse_lick_vector
+
+    if lick_exponential_decay is True:
+        decay_constant = 2
+        exp_lick = np.exp(-decay_constant * time_before_lick)
+
+
+
+
+
 
     return signal_matrix, lick_matrix
 
@@ -616,8 +633,8 @@ def loss_function_batch(param_vals, batch):
 
     batch_predictions = batched_predict_lick(param_vals, signal)
     # batch_loss = batched_cross_entropy(actual_lick_vector=lick_matrix, p_lick=batch_predictions)
-    batch_loss = matrix_cross_entropy_loss(lick, batch_predictions)
-    # batch_loss = matrix_weighted_cross_entropy_loss(lick, batch_predictions, alpha=1)
+    # batch_loss = matrix_cross_entropy_loss(lick, batch_predictions)
+    batch_loss = matrix_weighted_cross_entropy_loss(lick, batch_predictions, alpha=2)
 
     return batch_loss
 
@@ -735,7 +752,7 @@ def run_through_dataset_fit_vector(datapath, savepath, training_savepath, param=
             training_result = pkl.load(handle)
 
     # normally -1 (last training epoch)
-    param = training_result["param_val"][49] # time shift 0: 0 - 9, time shift 2: 10 - 19
+    param = training_result["param_val"][99] # time shift 0: 0 - 9, time shift 2: 10 - 19
 
     global time_shift
     time_shift = 8
@@ -768,6 +785,7 @@ def run_through_dataset_fit_vector(datapath, savepath, training_savepath, param=
     # signals has to be specially prepared to get the vectorised code running
     prediction_matrix = batched_predict_lick(param, signal_matrix)
     # prediction_matrix[lick_matrix == 99] = onp.nan
+
     prediction_matrix = np.where(lick_matrix == 99, onp.nan, prediction_matrix)
 
     if time_shift != 0:
@@ -784,6 +802,42 @@ def run_through_dataset_fit_vector(datapath, savepath, training_savepath, param=
 
     with open(savepath, "wb") as handle:
         pkl.dump(vec_dict, handle)
+
+
+def control_model(datapath, savepath):
+
+    with open(datapath, "rb") as handle:
+        exp_data = pkl.load(handle)
+
+    # signals = exp_data["ys"].flatten()
+    # mouse_rt = exp_data["rt"].flatten()
+    change = np.exp(exp_data["sig"].flatten())
+    tau = exp_data["change"].flatten()
+    absolute_decision_time = exp_data["rt"].flatten()
+
+    # runs data through a control which uses the normative posterior (no transfer functions)
+    signal_matrix, lick_matrix = create_vectorised_data(datapath)
+
+    global transition_matrix_list
+    # _, transition_matrix_list = get_hazard_rate(hazard_rate_type="experimental", datapath=datapath)
+    _, transition_matrix_list = get_hazard_rate(hazard_rate_type="constant", datapath=datapath)
+
+    global batched_predict_lick
+    batched_predict_lick = vmap(predict_lick_control, in_axes=(None, 0))
+    prediction_matrix = batched_predict_lick(None, signal_matrix)
+
+    # Remove predictions after the mouse licks, since there are no real signals after the mouse licked
+    prediction_matrix = np.where(lick_matrix == 99, onp.nan, prediction_matrix)
+
+    vec_dict = dict()
+    vec_dict["change_value"] = change
+    vec_dict["rt"] = absolute_decision_time
+    vec_dict["model_vec_output"] = prediction_matrix
+    vec_dict["true_change_time"] = tau
+
+    with open(savepath, "wb") as handle:
+        pkl.dump(vec_dict, handle)
+
 
 
 
@@ -1089,6 +1143,9 @@ def get_hazard_rate(hazard_rate_type="subjective", datapath=None, plot_hazard_ra
         hazard_rate_vec = experimental_hazard_rate
     elif hazard_rate_type == "normative":
         pass
+    elif hazard_rate_type == "constant":
+        hazard_rate_constant = 0.001
+        hazard_rate_vec = np.repeat(hazard_rate_constant, max_signal_length)
 
     if plot_hazard_rate is True:
         fig, ax = plt.subplots(1, 1, figsize=(8, 6))
@@ -1175,13 +1232,13 @@ def gradient_descent_w_hazard_rate(exp_data_path, training_savepath, init_param_
 
     # print("Initial parameters:", init_param_vals)
 
-    # config.update("jax_debug_nans", True) # nan debugging
+    config.update("jax_debug_nans", True) # nan debugging
     # COMMENT OUT UNLESS DEBUGGING; it causes slowdowns.
 
     for time_shift in tqdm(time_shift_list):
         print("Time shift: ", str(time_shift))
 
-        step_size = 0.01
+        step_size = 0.01 # orignally 0.01
         momentum_mass = 0.4
         # opt_init, opt_update = optimizers.momentum(step_size, mass=momentum_mass)
         opt_init, opt_update = optimizers.adam(step_size, b1=0.9, b2=0.999, eps=1e-8)
@@ -1296,6 +1353,12 @@ def predict_lick_w_hazard_rate(param_vals, signal):
 
     return p_lick
 
+def predict_lick_control(param, signal):
+    posterior = forward_inference_custom_transition_matrix(signal.flatten())
+    p_lick = np.where(posterior > 1, 1, posterior) # I've seen rounding errors where the output is 1.0000001 (strange)
+    # Flagging just in case it as cosequences to other models...
+    return p_lick
+
 
 def plot_trained_hazard_rate(training_savepath, figsavepath, num_non_hazard_rate_param=2):
     with open(training_savepath, "rb") as handle:
@@ -1319,7 +1382,7 @@ def plot_trained_hazard_rate(training_savepath, figsavepath, num_non_hazard_rate
     plt.show()
 
 
-def benchmark_model(datapath, training_savepath, figsavepath=None):
+def benchmark_model(datapath, training_savepath, figsavepath=None, alpha=1):
 
 
     signal_matrix, lick_matrix = create_vectorised_data(datapath)
@@ -1334,7 +1397,7 @@ def benchmark_model(datapath, training_savepath, figsavepath=None):
 
 
     loss = training_result["loss"][-1]
-    all_zero_loss = matrix_weighted_cross_entropy_loss(lick_matrix, all_zero_prediction_matrix, alpha=1)
+    all_zero_loss = matrix_weighted_cross_entropy_loss(lick_matrix, all_zero_prediction_matrix, alpha=alpha)
 
     figure, ax = plt.subplots(1, 1, figsize=(8, 6))
 
@@ -1355,7 +1418,7 @@ def plot_time_shift_training_result(training_savepath, figsavepath=None):
         training_result = pkl.load(handle)
 
     time_shift_list = np.arange(0, 22, 2)
-    num_step = 10
+    num_step = 20
     num_epoch_per_step = 10
     loss = training_result["loss"]
     final_losses = loss[num_step-1::num_step] # 9th, 19th, etc... (0 indexing)
@@ -1375,9 +1438,60 @@ def plot_time_shift_training_result(training_savepath, figsavepath=None):
     plt.show()
 
 
+def plot_posterior(datapath, figsavepath=None):
+
+    with open(datapath, "rb") as handle:
+        exp_data = pkl.load(handle)
+
+    signals = exp_data["ys"]
+    change_magnitude = exp_data["sig"]
+    change_time = exp_data["change"]
+
+
+    ########### PLOT MEAN POSTERIOR over time GROUPED BY STIMULUS MAGNITUDE
+
+    posterior_list = list()
+
+    global transition_matrix_list
+    _, transition_matrix_list = get_hazard_rate(hazard_rate_type="experimental", datapath=datapath)
+
+
+    # batched_get_posterior = vmap(forward_inference_custom_transition_matrix, in_axes=(None, 0))
+    # posterior_array = batched_get_posterior(signals)
+
+    for signal in tqdm(signals):
+        print(np.shape(signal))
+        posterior = forward_inference_custom_transition_matrix(signal[0].flatten())
+        posterior_list.append(posterior)
+
+
+    fig, ax = plt.subplots(1, 1, figsize=(8, 6))
+    windowed_posterior = list()
+    window_length = 100
+    for change_mag in np.unique(change_magnitude):
+        change_index = onp.where(change_magnitude == change_mag)[0]
+        for index in change_index:
+            start_index = change_time[index] - window_length/2
+            end_index = change_time[index] + window_length/2
+            windowed_posterior.append(posterior_list[start_index:end_index])
+
+        windowed_posterior_array = np.array(windowed_posterior)
+        mean_posterior = np.mean(windowed_posterior, axis=0)
+
+        ax.plot(mean_posterior, label=str(change_mag))
+
+    ax.set_xlabel("Peri-change time (frames)")
+    ax.set_ylabel(r"$P(z_k = \mathrm{change} \vert x_{1:k})$")
+
+    if figsavepath is not None:
+        plt.savefig(figsavepath)
+
+    plt.show()
+
+
 def main(model_number=99,run_test_foward_algorithm=False, run_test_on_data=False, run_gradient_descent=False, run_plot_training_loss=False, run_plot_sigmoid=False, run_plot_test_loss=False,
          run_model=False, run_plot_time_shift_test=False, run_plot_hazard_rate=False, run_plot_trained_hazard_rate=False,
-         run_benchmark_model=False, run_plot_time_shift_training_result=False):
+         run_benchmark_model=False, run_plot_time_shift_training_result=False, run_plot_posterior=False, run_control_model=False):
     # datapath = "/media/timothysit/180C-2DDD/second_rotation_project/exp_data/subsetted_data/data_IO_083.pkl"
     exp_data_number = 83
     main_folder = os.path.join(home, "Dropbox/notes/Projects/second_rotation_project/normative_model")
@@ -1409,6 +1523,8 @@ def main(model_number=99,run_test_foward_algorithm=False, run_test_on_data=False
     if run_model is True:
         run_through_dataset_fit_vector(datapath=datapath, savepath=model_save_path, training_savepath=training_savepath, param=None)
 
+    if run_control_model is True:
+        control_model(datapath=datapath, savepath=model_save_path)
 
     # compare_model_with_behaviour(model_behaviour_df_path=model_save_path, savepath=fig_save_path, showfig=True)
 
@@ -1427,7 +1543,9 @@ def main(model_number=99,run_test_foward_algorithm=False, run_test_on_data=False
                                            training_savepath=training_savepath,
                                            init_param_vals=np.array([10.0, 0.5]),
                                            n_params=2, fit_hazard_rate=True,
-                                           time_shift_list=np.arange(0, 22, 2), num_epoch=100)
+                                           time_shift_list=np.arange(0, 1), num_epoch=1000)
+
+        # sim 32:  time_shift_list=np.arange(0, 22, 2), num_epoch=200
 
 
 
@@ -1462,16 +1580,22 @@ def main(model_number=99,run_test_foward_algorithm=False, run_test_on_data=False
 
     if run_benchmark_model is True:
         figsavepath = os.path.join(main_folder, "figures/loss_benchmark_model_" + str(model_number) + ".png")
-        benchmark_model(datapath, training_savepath, figsavepath=figsavepath)
+        benchmark_model(datapath, training_savepath, figsavepath=figsavepath, alpha=2)
 
     if run_plot_time_shift_training_result is True:
         figsavepath = os.path.join(main_folder, "figures/time_shift_loss_model_" + str(model_number) + ".png")
         plot_time_shift_training_result(training_savepath=training_savepath, figsavepath=figsavepath)
 
+    if run_plot_posterior is True:
+        figsavepath = os.path.join(main_folder, "figures/pure_posterior_exp_transition_matrix_window_40.png")
+        plot_posterior(datapath=datapath, figsavepath=None)
+
+
 
 if __name__ == "__main__":
-    main(model_number=30, run_test_on_data=False, run_gradient_descent=False, run_plot_training_loss=False, run_plot_sigmoid=False,
+    main(model_number=999, run_test_on_data=False, run_gradient_descent=False, run_plot_training_loss=False,
+         run_plot_sigmoid=False,
          run_plot_test_loss=False, run_model=False, run_plot_time_shift_test=False,
          run_plot_hazard_rate=False, run_plot_trained_hazard_rate=False, run_benchmark_model=False,
-         run_plot_time_shift_training_result=False)
+         run_plot_time_shift_training_result=False, run_plot_posterior=False, run_control_model=True)
 
