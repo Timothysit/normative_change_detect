@@ -5,6 +5,7 @@ import pandas as pd
 # Plotting
 import seaborn as sns
 import matplotlib.pyplot as plt
+import matplotlib.gridspec as gridspec
 
 # files
 import os
@@ -57,6 +58,12 @@ def sample_from_model(model_data_path, num_samples=1000, plot_check=False, savep
         model_rt = np.argmax(lick_samples, axis=1).astype(float) # - actual_change_time[trial_num] # on each row, find the first occurence of 1 (lick)
         # note that lick during the first frame will return model_rt of 0 (and so will no lick)
         # this problem is dealt with in the following line by setting true no licks to np.nan
+
+        # also note that model reaction time is zero-indexed.
+        # convert model reaction time to 1 indexed, so licking at frame 1 has model_rt = 1
+        # IF USING TIME_SHIFTED SAMPLES, NEED TO GO BACK TO USING 0-INDEXING!
+        model_rt = model_rt + 1
+
         model_rt[model_no_lick_index] = np.nan
         prop_lick = np.sum(~np.isnan(model_rt)) / num_samples # proportion of lick, where reaction time is not zero.
 
@@ -72,6 +79,7 @@ def sample_from_model(model_data_path, num_samples=1000, plot_check=False, savep
 
 
         # compute model performance
+        """
         if not np.isnan(actual_change_time[trial_num]):
             early_lick_prop = np.sum(model_rt[~np.isnan(model_rt)] < actual_change_time[trial_num]) / num_samples
             correct_lick_prop = np.sum(model_rt >= actual_change_time[trial_num]) / num_samples
@@ -84,6 +92,18 @@ def sample_from_model(model_data_path, num_samples=1000, plot_check=False, savep
             miss_prop = np.nan
             false_alarm_prop = np.sum(~np.isnan(model_rt)) / num_samples
             correct_no_lick_prop = np.sum(np.isnan(model_rt)) / num_samples
+        """
+
+        # under re-definition of hit and FA in trials with changes from baseline to baseline, there are no longer nan
+        # actual change times, and early licks and FA becomes equivalent
+        # and correct no licks become irrelevant (they are called "misses" in the no change trial)
+
+        early_lick_prop = np.sum(model_rt[~np.isnan(model_rt)] < actual_change_time[trial_num]) / num_samples
+        correct_lick_prop = np.sum(model_rt >= actual_change_time[trial_num]) / num_samples # equivalent to "Hit"
+        miss_prop = np.sum(np.isnan(model_rt)) / num_samples
+        false_alarm_prop = early_lick_prop
+        correct_no_lick_prop = np.nan
+
 
         prop_lick_list.append(prop_lick)
         early_lick_prop_list.append(early_lick_prop)
@@ -118,7 +138,9 @@ def sample_from_model(model_data_path, num_samples=1000, plot_check=False, savep
     sampled_data["miss_prop"] = miss_prop_list
     sampled_data["false_alarm_prop"] = false_alarm_prop_list
     sampled_data["correct_no_lick_prop"] = correct_no_lick_list
-    sampled_data["hit_prop"] = np.nansum([np.array(correct_lick_prop_list), np.array(correct_no_lick_list)], axis=0)
+    # sampled_data["hit_prop"] = np.nansum([np.array(correct_lick_prop_list), np.array(correct_no_lick_list)], axis=0)
+    # redefined "Hit" no longer counts no-licks during change from baseline to baseline
+    sampled_data["hit_prop"] = correct_lick_prop_list
     sampled_data["mean_model_rt"] = mean_model_rt_list
     sampled_data["mean_model_relative_rt"] = mean_model_rt_list - actual_change_time
 
@@ -146,8 +168,6 @@ def plot_psychometric(model_sample_path, mouse_beahviour_df_path=None, metric="p
     df_prop_choice = df.groupby(["change_value"], as_index=False).agg({metric: "mean"})
     df_std = df.groupby(["change_value"], as_index=False).agg({metric: "std"})
 
-    # TODO: Think about subsetting criteria (eg. only hits)
-
     fig, ax = plt.subplots(figsize=(8, 6))
 
     ax.plot(df_prop_choice["change_value"], df_prop_choice[metric], label="Model")
@@ -164,6 +184,8 @@ def plot_psychometric(model_sample_path, mouse_beahviour_df_path=None, metric="p
             mouse_metric = "mouse_lick"
         elif metric == "hit_prop":
             mouse_metric = "mouse_hit"
+        elif metric == "false_alarm_prop":
+            mouse_metric = "mouse_FA"
         mouse_df = pd.read_pickle(mouse_beahviour_df_path)
         mouse_prop_choice = mouse_df.groupby(["change"], as_index=False).agg({mouse_metric: "mean"})
 
@@ -367,9 +389,131 @@ def compare_distributions(mouse_df_path, model_sample_path=None, savepath=None, 
     plt.show()
 
 
+def compare_model_and_mouse_dist(mouse_df_path, model_df_path, plot_type="FA", change_magnitude=None, savepath=None,
+                                 strip_dot_size=2, strip_jitter=1, strip_dot_alpha=1, model_sub_sample=1000,
+                                 show_model_sub_sample=None, showfig=True):
+
+    mouse_df = pd.read_pickle(mouse_df_path)
+    model_df = pd.read_pickle(model_df_path)
+
+
+    if plot_type == "FA":
+        mouse_hit_index = np.where((mouse_df["peri_stimulus_rt"]) >= 0 & (mouse_df["change"] > 0))[0]
+        mouse_df = mouse_df.loc[~mouse_df.index.isin(mouse_hit_index)]
+        model_hit_index = np.where((model_df["peri_stimulus_rt"]) >= 0 & (model_df["change"] > 0))[0]
+        model_df = model_df.loc[~model_df.index.isin(model_hit_index)]
+    elif plot_type == "Hit":
+        mouse_hit_index = np.where((mouse_df["peri_stimulus_rt"]) >= 0 & (np.exp(mouse_df["change"]) == change_magnitude))[0]
+        mouse_df = mouse_df.loc[mouse_df.index.isin(mouse_hit_index)]
+        model_hit_index = np.where((model_df["peri_stimulus_rt"]) >= 0 & (np.exp(model_df["change"]) == change_magnitude))[0]
+        model_df = model_df.loc[model_df.index.isin(model_hit_index)]
+
+
+    if model_sub_sample is not None:
+        model_df = model_df.sample(model_sub_sample)
+
+    gs = gridspec.GridSpec(3, 1, height_ratios=[1, 0.5, 0.5])
+    ax1 = plt.subplot(gs[0])
+    ax2 = plt.subplot(gs[1], sharex=ax1)
+    ax3 = plt.subplot(gs[2], sharex=ax1)
+
+    axs = [ax1, ax2, ax3]
+
+    plt.setp(ax1.get_xticklabels(), visible=False)
+    plt.setp(ax2.get_xticklabels(), visible=False)
+
+
+
+    # fig, axs = plt.subplots(3, 1, figsize=(8, 6), sharex=True)
+
+
+
+    if plot_type == "FA":
+        # first row: KDE of model and mouse
+        sns.kdeplot(mouse_df["absolute_decision_time"], shade=False, linewidth=3, vertical=False, alpha=0.5, ax=axs[0],
+                    label="Mouse")
+        sns.kdeplot(model_df["absolute_decision_time"], shade=False, linewidth=3, vertical=False, alpha=0.5, ax=axs[0],
+                    label="Model")
+        axs[0].legend(frameon=False)
+
+        # second row: mouse reaction times
+        sns.stripplot(x="absolute_decision_time", data=mouse_df,
+                      size=strip_dot_size, jitter=strip_jitter, alpha=strip_dot_alpha, ax=axs[1],
+                      color="blue")
+
+
+        # third row: model reaction times
+        if show_model_sub_sample is not None:
+            model_df = model_df.sample(show_model_sub_sample)
+
+        sns.stripplot(x="absolute_decision_time", data=model_df,
+                      size=strip_dot_size, jitter=strip_jitter, alpha=strip_dot_alpha, ax=axs[2],
+                      color="orange")
+
+
+        for ax in axs:
+            ax.spines["right"].set_visible(False)
+            ax.spines["top"].set_visible(False)
+
+        axs[0].spines["bottom"].set_visible(False)
+        axs[1].spines["bottom"].set_visible(False)
+
+        axs[1].spines["left"].set_visible(False)
+        axs[2].spines["left"].set_visible(False)
+
+        axs[2].set_xlabel("Time to lick (frames)")
+        axs[1].set_xlabel("")
+
+        ax1.set_xlim(xmin=0)
+    # TODO: There is significant overlap in the two conditions, can remove duplicates
+    elif plot_type == "Hit":
+        # first row: KDE of model and mouse
+        sns.kdeplot(mouse_df["peri_stimulus_rt"], shade=False, linewidth=3, vertical=False, alpha=0.5, ax=axs[0],
+                    label="Mouse")
+        sns.kdeplot(model_df["peri_stimulus_rt"], shade=False, linewidth=3, vertical=False, alpha=0.5, ax=axs[0],
+                    label="Model")
+        axs[0].legend(frameon=False)
+
+        # second row: mouse reaction times
+        sns.stripplot(x="peri_stimulus_rt", data=mouse_df,
+                      size=strip_dot_size, jitter=strip_jitter, alpha=strip_dot_alpha, ax=axs[1],
+                      color="blue")
+
+
+        # third row: model reaction times
+        if show_model_sub_sample is not None:
+            model_df = model_df.sample(show_model_sub_sample)
+
+        sns.stripplot(x="peri_stimulus_rt", data=model_df,
+                      size=strip_dot_size, jitter=strip_jitter, alpha=strip_dot_alpha, ax=axs[2],
+                      color="orange")
+
+
+        for ax in axs:
+            ax.spines["right"].set_visible(False)
+            ax.spines["top"].set_visible(False)
+
+        axs[0].spines["bottom"].set_visible(False)
+        axs[1].spines["bottom"].set_visible(False)
+
+        axs[1].spines["left"].set_visible(False)
+        axs[2].spines["left"].set_visible(False)
+
+        axs[2].set_xlabel("Peri-stimulus lick time (frame)")
+        axs[1].set_xlabel("")
+
+        ax1.set_xlim(xmin=0)
+
+    if savepath is not None:
+        plt.savefig(savepath, dpi=300)
+
+    if showfig is True:
+        plt.show()
+
+
 def main(model_number=20, mouse_number=83, run_get_mouse_df=True, run_sample_from_model=True, run_plot_psychom_metric_comparison=True,
          run_plot_mouse_reaction_time=True,
-         run_plot_model_reaction_time=True):
+         run_plot_model_reaction_time=True, run_compare_model_and_mouse_dist=False):
 
     # load data
     mainfolder = os.path.join(home, "Dropbox/notes/Projects/second_rotation_project/normative_model/")
@@ -408,6 +552,12 @@ def main(model_number=20, mouse_number=83, run_get_mouse_df=True, run_sample_fro
                                     + "_model_" + str(model_number))
         plot_psychometric(model_sample_path, mouse_df_path,
                                       metric="hit_prop", label="Proportion of hits", savepath=figsavepath)
+
+        # False Alarms
+        figsavepath = os.path.join(mainfolder, "figures/FA_psychometric_curve_comparision_mouse" + str(mouse_number)
+                                    + "_model_" + str(model_number))
+        plot_psychometric(model_sample_path, mouse_df_path,
+                      metric="false_alarm_prop", label="Proportion of false alarms", savepath=figsavepath)
 
 
     # savepath = os.path.join(mainfolder, "reaction_time_samples_model_" + str(model_number))
@@ -452,12 +602,31 @@ def main(model_number=20, mouse_number=83, run_get_mouse_df=True, run_sample_fro
 
         figsavepath = os.path.join(mainfolder, "figures/individual_reaction_time_distribution_model_false_alarms_"
                                    + str(model_number))
-        compare_distributions(mouse_df_path=model_individual_sample_path, savepath=figsavepath, sub_sample=None,
+        compare_distributions(mouse_df_path=model_individual_sample_path, savepath=figsavepath, sub_sample=1000,
                               plot_type="false_alarms", metric="absolute_decision_time")
+
+    if run_compare_model_and_mouse_dist is True:
+        additional_info = "sub_sample_10000"
+        figsavepath = os.path.join(mainfolder, "figures/reaction_time_false_alarm_dist_comparison_model_"
+                                   + str(model_number) + additional_info + ".png")
+        compare_model_and_mouse_dist(mouse_df_path=mouse_df_path, model_df_path=model_individual_sample_path, 
+                                     savepath=figsavepath, plot_type="FA", strip_dot_size=2, strip_jitter=1.2,
+                                     strip_dot_alpha=0.6, model_sub_sample=10000,
+                                     show_model_sub_sample=None)
+
+        for change_magnitude in [1.25, 1.35, 1.50, 2.00, 4.00]:
+            figsavepath = os.path.join(mainfolder, "figures/reaction_time_hits_dist_comparison_model_"
+                                       + str(model_number) + "change_" + str(change_magnitude) + additional_info + ".png")
+            compare_model_and_mouse_dist(mouse_df_path=mouse_df_path, model_df_path=model_individual_sample_path,
+                                         savepath=figsavepath, plot_type="Hit", strip_dot_size=2, strip_jitter=1.2,
+                                         strip_dot_alpha=0.6, model_sub_sample=10000,
+                                         change_magnitude=change_magnitude,
+                                         show_model_sub_sample=None, showfig=False)
 
 
 
 if __name__ == "__main__":
-    main(model_number=25, run_get_mouse_df=True, run_sample_from_model=True, run_plot_psychom_metric_comparison=True,
-         run_plot_mouse_reaction_time=True,
-         run_plot_model_reaction_time=True)
+    main(model_number=35, run_get_mouse_df=False, run_sample_from_model=False, run_plot_psychom_metric_comparison=False,
+         run_plot_mouse_reaction_time=False,
+         run_plot_model_reaction_time=False,
+         run_compare_model_and_mouse_dist=True)

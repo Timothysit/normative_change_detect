@@ -752,10 +752,10 @@ def run_through_dataset_fit_vector(datapath, savepath, training_savepath, param=
             training_result = pkl.load(handle)
 
     # normally -1 (last training epoch)
-    param = training_result["param_val"][99] # time shift 0: 0 - 9, time shift 2: 10 - 19
+    param = training_result["param_val"][-1] # time shift 0: 0 - 9, time shift 2: 10 - 19
 
     global time_shift
-    time_shift = 8
+    time_shift = 0
 
 
     with open(datapath, "rb") as handle:
@@ -1195,7 +1195,7 @@ def make_transition_matrix(hazard_rate_vec):
 
 def gradient_descent_w_hazard_rate(exp_data_path, training_savepath, init_param_vals=np.array([10.0, 0.5]),
                                 time_shift_list=np.arange(0, 5), num_epoch=10, fit_hazard_rate=True,
-                                   n_params=2):
+                                   n_params=2, batch_size=None):
     """
 
     :return:
@@ -1212,7 +1212,7 @@ def gradient_descent_w_hazard_rate(exp_data_path, training_savepath, init_param_
     # signal_matrix, lick_matrix = create_vectorised_data(exp_data_path)
     # Lick now has exponential decay.
     signal_matrix, lick_matrix = create_vectorised_data(exp_data_path,
-                                                        lick_exponential_decay=True, decay_constant=0.5)
+                                                        lick_exponential_decay=True, decay_constant=1.0)
 
     hazard_rate,_ = get_hazard_rate(hazard_rate_type="subjective", datapath=exp_data_path)
     
@@ -1236,7 +1236,7 @@ def gradient_descent_w_hazard_rate(exp_data_path, training_savepath, init_param_
 
     # print("Initial parameters:", init_param_vals)
 
-    config.update("jax_debug_nans", True) # nan debugging
+    # config.update("jax_debug_nans", True) # nan debugging
     # COMMENT OUT UNLESS DEBUGGING; it causes slowdowns.
 
     for time_shift in tqdm(time_shift_list):
@@ -1272,20 +1272,19 @@ def gradient_descent_w_hazard_rate(exp_data_path, training_savepath, init_param_
 
 
         # Minibatch gradient descent
+        if batch_size is not None:
+            num_train = onp.shape(signal_matrix)[0]
+            num_complete_batches, leftover = divmod(num_train, batch_size)
+            num_batches = num_complete_batches + bool(leftover)
 
-        num_train = onp.shape(signal_matrix)[0]
-        batch_size = 128
-        num_complete_batches, leftover = divmod(num_train, batch_size)
-        num_batches = num_complete_batches + bool(leftover)
-
-        def data_stream():
-            rng = npr.RandomState(0)
-            while True:
-                perm = rng.permutation(num_train)
-                for i in range(num_batches):
-                    batch_idx = perm[i * batch_size:(i + 1) * batch_size]
-                    yield signal_matrix[batch_idx, :], lick_matrix[batch_idx, :]
-        batches = data_stream()
+            def data_stream():
+                rng = npr.RandomState(0)
+                while True:
+                    perm = rng.permutation(num_train)
+                    for i in range(num_batches):
+                        batch_idx = perm[i * batch_size:(i + 1) * batch_size]
+                        yield signal_matrix[batch_idx, :], lick_matrix[batch_idx, :]
+            batches = data_stream()
 
 
         opt_state = opt_init(init_param_vals)
@@ -1300,8 +1299,11 @@ def gradient_descent_w_hazard_rate(exp_data_path, training_savepath, init_param_
 
         for epoch in range(num_epoch):
             # print("Epoch: ", str(epoch))
-            for _ in range(num_batches):
-                opt_state = step(epoch, opt_state, next(batches))
+            if batch_size is not None:
+                for _ in range(num_batches):
+                    opt_state = step(epoch, opt_state, next(batches))
+            else:
+                opt_state = step(epoch, opt_state, (signal_matrix, lick_matrix))
 
             if epoch % 10 == 0:
                 params = optimizers.get_params(opt_state)
@@ -1547,7 +1549,7 @@ def main(model_number=99,run_test_foward_algorithm=False, run_test_on_data=False
                                             training_savepath=training_savepath,
                                             init_param_vals=np.array([10.0, 0.5]),
                                             n_params=2, fit_hazard_rate=True,
-                                           time_shift_list=np.arange(0, 1), num_epoch=300)
+                                           time_shift_list=np.arange(0, 1), num_epoch=300, batch_size=128)
 
         # sim 32:  time_shift_list=np.arange(0, 22, 2), num_epoch=200
 
@@ -1584,7 +1586,7 @@ def main(model_number=99,run_test_foward_algorithm=False, run_test_on_data=False
 
     if run_benchmark_model is True:
         figsavepath = os.path.join(main_folder, "figures/loss_benchmark_model_" + str(model_number) + ".png")
-        benchmark_model(datapath, training_savepath, figsavepath=figsavepath, alpha=2)
+        benchmark_model(datapath, training_savepath, figsavepath=figsavepath, alpha=1)
 
     if run_plot_time_shift_training_result is True:
         figsavepath = os.path.join(main_folder, "figures/time_shift_loss_model_" + str(model_number) + ".png")
@@ -1597,9 +1599,9 @@ def main(model_number=99,run_test_foward_algorithm=False, run_test_on_data=False
 
 
 if __name__ == "__main__":
-    main(model_number=33, run_test_on_data=False, run_gradient_descent=True, run_plot_training_loss=False,
+    main(model_number=35, run_test_on_data=False, run_gradient_descent=False, run_plot_training_loss=False,
          run_plot_sigmoid=False,
-         run_plot_test_loss=False, run_model=False, run_plot_time_shift_test=False,
-         run_plot_hazard_rate=False, run_plot_trained_hazard_rate=False, run_benchmark_model=False,
+         run_plot_test_loss=False, run_model=True, run_plot_time_shift_test=False,
+         run_plot_hazard_rate=False, run_plot_trained_hazard_rate=True, run_benchmark_model=False,
          run_plot_time_shift_training_result=False, run_plot_posterior=False, run_control_model=False)
 
