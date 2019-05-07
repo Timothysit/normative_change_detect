@@ -28,6 +28,7 @@ def sample_from_model(model_data_path, num_samples=1000, plot_check=False, savep
     model_prob_output = model_data["model_vec_output"]
     actual_change_time = model_data["true_change_time"]
     change_value = model_data["change_value"]
+    subjective_change_value = model_data["subjective_change"]
 
     # when change goes from 1.0 to 1.0, there is no change and so change time should be nan
     # actual_change_time = np.where(change_value == 1.0, np.nan, actual_change_time)
@@ -46,6 +47,7 @@ def sample_from_model(model_data_path, num_samples=1000, plot_check=False, savep
     individual_sample_actual_change_time = list()
     individual_sample_rt = list()
     individual_sample_change_value = list()
+    individual_sample_subjective_change_value = list()
 
     print("Sampling from model")
     for trial_num, model_trial_output in tqdm(enumerate(model_prob_output)):
@@ -71,6 +73,7 @@ def sample_from_model(model_data_path, num_samples=1000, plot_check=False, savep
         individual_sample_rt.append(model_rt)
         individual_sample_actual_change_time.append(np.repeat(actual_change_time[trial_num], repeats=num_samples))
         individual_sample_change_value.append(np.repeat(change_value[trial_num], repeats=num_samples))
+        individual_sample_subjective_change_value.append(np.repeat(subjective_change_value[trial_num], repeats=num_samples))
 
         # model_relative_rt = np.argmax(lick_samples, axis=1) - actual_change_time[trial_num]
 
@@ -131,6 +134,7 @@ def sample_from_model(model_data_path, num_samples=1000, plot_check=False, savep
 
     sampled_data = dict()
     sampled_data["change_value"] = change_value
+    sampled_data["subjective_change_value"] = subjective_change_value
     sampled_data["actual_change_time"] = actual_change_time
     sampled_data["prop_lick"] = prop_lick_list
     sampled_data["early_lick_prop"] = early_lick_prop_list
@@ -152,6 +156,7 @@ def sample_from_model(model_data_path, num_samples=1000, plot_check=False, savep
     individual_sample_dict["absolute_decision_time"] = np.concatenate(individual_sample_rt).ravel()
     individual_sample_dict["peri_stimulus_rt"] = np.concatenate(individual_sample_rt).ravel() - individual_sample_dict["actual_change_time"]
     individual_sample_dict["change"] = np.log(np.concatenate(individual_sample_change_value).ravel())
+    individual_sample_dict["subjective_change_value"] = np.concatenate(individual_sample_subjective_change_value).ravel()
     individual_sample_df = pd.DataFrame.from_dict(individual_sample_dict)
 
     if savepath is not None:
@@ -212,6 +217,56 @@ def plot_psychometric(model_sample_path, mouse_beahviour_df_path=None, metric="p
         plt.show()
 
 
+def plot_psychometric_subjective(model_sample_path, mouse_beahviour_df_path=None, metric="prop_lick", label="Proportion of licks",
+                      savepath=None, showfig=True):
+    # TODO: This can be combined with plot_psychometric by specifying the groupby argument (separately for model and mouse)
+    df = pd.read_pickle(model_sample_path)
+    df_prop_choice = df.groupby(["subjective_change_value"], as_index=False).agg({metric: "mean"})
+    df_std = df.groupby(["subjective_change_value"], as_index=False).agg({metric: "std"})
+
+    fig, ax = plt.subplots(figsize=(8, 6))
+
+    ax.plot(df_prop_choice["subjective_change_value"], df_prop_choice[metric], label="Model")
+    ax.fill_between(df_prop_choice["subjective_change_value"], df_prop_choice[metric] - df_std[metric],
+                    df_prop_choice[metric] + df_std[metric], alpha=0.3)
+    ax.scatter(df_prop_choice["subjective_change_value"], df_prop_choice[metric], label=None, color="blue")
+
+    # show all data points
+    # ax.scatter(df["change_value"], df[metric], alpha=0.1, color="b")
+
+    # Plot mouse behaviour as well
+    if mouse_beahviour_df_path is not None:
+        if metric == "prop_lick":
+            mouse_metric = "mouse_lick"
+        elif metric == "hit_prop":
+            mouse_metric = "mouse_hit"
+        elif metric == "false_alarm_prop":
+            mouse_metric = "mouse_FA"
+        elif metric == "miss_prop":
+            mouse_metric = "mouse_miss"
+        mouse_df = pd.read_pickle(mouse_beahviour_df_path)
+        mouse_prop_choice = mouse_df.groupby(["subjective_change_value"], as_index=False).agg({mouse_metric: "mean"})
+
+        ax.plot(mouse_prop_choice["subjective_change_value"], mouse_prop_choice[mouse_metric], label="Mouse")
+        ax.scatter(mouse_prop_choice["subjective_change_value"], mouse_prop_choice[mouse_metric], label=None)
+
+        ax.legend(frameon=False)
+
+    if "prop" in metric:
+        ax.set_ylim([0, 1.05])
+
+    ax.set_xlabel("Subjective change magnitude")
+    ax.set_ylabel(label)
+
+    ax.spines["right"].set_visible(False)
+    ax.spines["top"].set_visible(False)
+
+    if savepath is not None:
+        plt.savefig(savepath, dpi=300)
+
+    if showfig is True:
+        plt.show()
+
 
 def compare_model_w_behaviour_plot(model_sample_path, mouse_df_path,
                                    metric="prop_lick", label="Proportion of licks", figsavepath=None):
@@ -266,6 +321,13 @@ def get_mouse_behaviour_df(mouse_behaviour_path, savepath=None):
     mouse_dict["actual_change_time"] = exp_data["change"].flatten()
     mouse_dict["absolute_decision_time"] = exp_data["rt"].flatten()
     mouse_dict["peri_stimulus_rt"] = mouse_dict["absolute_decision_time"] - mouse_dict["actual_change_time"]
+
+    # Subjective change (from the mice's pov): early licks will have no change
+    mouse_early_lick = np.where(mouse_dict["absolute_decision_time"] < mouse_dict["actual_change_time"])[0]
+    subjective_change = np.array(np.exp(exp_data["sig"].flatten()))
+    subjective_change[mouse_early_lick] = 1
+    mouse_dict["subjective_change_value"] = subjective_change
+
 
     # Experimental data
     mouse_dict["mouse_hit"] = (exp_data["outcome"] == "Hit").astype(float).flatten()
@@ -515,7 +577,7 @@ def compare_model_and_mouse_dist(mouse_df_path, model_df_path, plot_type="FA", c
 
 
 def main(model_number=20, mouse_number=83, run_get_mouse_df=True, run_sample_from_model=True, run_plot_psychom_metric_comparison=True,
-         run_plot_mouse_reaction_time=True,
+         run_plot_mouse_reaction_time=True, run_plot_psychom_metric_comparison_subjective_change=False,
          run_plot_model_reaction_time=True, run_compare_model_and_mouse_dist=False):
 
     # load data
@@ -567,6 +629,31 @@ def main(model_number=20, mouse_number=83, run_get_mouse_df=True, run_sample_fro
                                     + "_model_" + str(model_number))
         plot_psychometric(model_sample_path, mouse_df_path,
                       metric="miss_prop", label="Proportion of misses", savepath=figsavepath)
+
+    if run_plot_psychom_metric_comparison_subjective_change is True:
+        figsavepath = os.path.join(mainfolder, "figures/licks_sub_psychometric_curve_comparision_mouse_" + str(mouse_number)
+                                    + "_model_" + str(model_number))
+        plot_psychometric_subjective(model_sample_path, mouse_beahviour_df_path=mouse_df_path,
+                           metric="prop_lick", label="Proportion of licks",
+                            savepath=figsavepath, showfig=True)
+
+        figsavepath = os.path.join(mainfolder, "figures/hits_sub_psychometric_curve_comparision_mouse" + str(mouse_number)
+                                    + "_model_" + str(model_number))
+        plot_psychometric_subjective(model_sample_path, mouse_df_path,
+                                      metric="hit_prop", label="Proportion of hits", savepath=figsavepath)
+
+        # False Alarms
+        figsavepath = os.path.join(mainfolder, "figures/FA_sub_psychometric_curve_comparision_mouse" + str(mouse_number)
+                                    + "_model_" + str(model_number))
+        plot_psychometric_subjective(model_sample_path, mouse_df_path,
+                      metric="false_alarm_prop", label="Proportion of false alarms", savepath=figsavepath)
+
+        # Misses
+        figsavepath = os.path.join(mainfolder, "figures/Miss_sub_psychometric_curve_comparision_mouse" + str(mouse_number)
+                                    + "_model_" + str(model_number))
+        plot_psychometric_subjective(model_sample_path, mouse_df_path,
+                      metric="miss_prop", label="Proportion of misses", savepath=figsavepath)
+
 
 
 
@@ -636,7 +723,8 @@ def main(model_number=20, mouse_number=83, run_get_mouse_df=True, run_sample_fro
 
 
 if __name__ == "__main__":
-    main(model_number=999, run_get_mouse_df=False, run_sample_from_model=True, run_plot_psychom_metric_comparison=False,
-         run_plot_mouse_reaction_time=False,
-         run_plot_model_reaction_time=False,
-         run_compare_model_and_mouse_dist=False)
+    main(model_number=1002, run_get_mouse_df=False, run_sample_from_model=True, run_plot_psychom_metric_comparison=True,
+         run_plot_psychom_metric_comparison_subjective_change=True,
+         run_plot_mouse_reaction_time=True,
+         run_plot_model_reaction_time=True,
+         run_compare_model_and_mouse_dist=True)
