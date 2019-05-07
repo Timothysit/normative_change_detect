@@ -782,13 +782,14 @@ def run_through_dataset_fit_vector(datapath, savepath, training_savepath, param=
             training_result = pkl.load(handle)
 
     # normally -1 (last training epoch)
-    param = training_result["param_val"][-1]
-    print("Parameter training loss: ",  str(training_result["loss"][-1])) # just to double check
+    epoch_index = 179
+    param = training_result["param_val"][epoch_index]
+    print("Parameter training loss: ",  str(training_result["loss"][epoch_index])) # just to double check
 
     # note that parameters do not need to be pre-processed
 
     global time_shift
-    time_shift = 0
+    time_shift = 5
 
 
     with open(datapath, "rb") as handle:
@@ -848,12 +849,18 @@ def control_model(datapath, savepath):
     tau = exp_data["change"].flatten()
     absolute_decision_time = exp_data["rt"].flatten()
 
+    # adding "subjective change value" based on whether the mouse actually saw the change period
+    # (some trial ended early when the mouse licks)
+    mouse_early_lick = onp.where(absolute_decision_time < tau)[0] # NaNs should not count, those are classify as misses
+    subjective_change = onp.array(np.exp(exp_data["sig"].flatten()))
+    subjective_change[mouse_early_lick] = 1
+
     # runs data through a control which uses the normative posterior (no transfer functions)
     signal_matrix, lick_matrix = create_vectorised_data(datapath)
 
     global transition_matrix_list
     # _, transition_matrix_list = get_hazard_rate(hazard_rate_type="experimental", datapath=datapath)
-    _, transition_matrix_list = get_hazard_rate(hazard_rate_type="constant", datapath=datapath)
+    _, transition_matrix_list = get_hazard_rate(hazard_rate_type="constant", datapath=datapath, constant_val=0.0001)
 
     global batched_predict_lick
     batched_predict_lick = vmap(predict_lick_control, in_axes=(None, 0))
@@ -867,6 +874,7 @@ def control_model(datapath, savepath):
     vec_dict["rt"] = absolute_decision_time
     vec_dict["model_vec_output"] = prediction_matrix
     vec_dict["true_change_time"] = tau
+    vec_dict["subjective_change"] = subjective_change
 
     with open(savepath, "wb") as handle:
         pkl.dump(vec_dict, handle)
@@ -1130,7 +1138,7 @@ def plot_time_shift_test(exp_data_path, param=[10, 0.5], time_shift_list=[0, 1],
     plt.show()
 
 
-def get_hazard_rate(hazard_rate_type="subjective", datapath=None, plot_hazard_rate=False, figsavepath=None):
+def get_hazard_rate(hazard_rate_type="subjective", datapath=None, plot_hazard_rate=False, figsavepath=None, constant_val=0.001):
     """
     The way I see it, there is 3 types of varying hazard rate.
     1. "normative": One specified by the experimental design; the actual distribution where the trial change-times are sampled from
@@ -1177,7 +1185,7 @@ def get_hazard_rate(hazard_rate_type="subjective", datapath=None, plot_hazard_ra
     elif hazard_rate_type == "normative":
         pass
     elif hazard_rate_type == "constant":
-        hazard_rate_constant = 0.001
+        hazard_rate_constant = constant_val
         hazard_rate_vec = np.repeat(hazard_rate_constant, max_signal_length)
     elif hazard_rate_type == "random":
         hazard_rate_vec = onp.random.normal(loc=0.0, scale=0.5, size=(max_signal_length, ))
@@ -1223,7 +1231,7 @@ def make_transition_matrix(hazard_rate_vec):
     hazard_rate_vec = softmax(hazard_rate_vec)
 
     # Directly clip the values
-    small_value = 1e-3
+    small_value = 1e-5
     hazard_rate_vec = np.where(hazard_rate_vec <= 0, small_value, hazard_rate_vec)
     hazard_rate_vec = np.where(hazard_rate_vec >= 1, 1-small_value, hazard_rate_vec)
 
@@ -1555,13 +1563,11 @@ def benchmark_model(datapath, training_savepath, figsavepath=None, alpha=1):
     plt.show()
 
 
-def plot_time_shift_training_result(training_savepath, figsavepath=None):
+def plot_time_shift_training_result(training_savepath, figsavepath=None, time_shift_list = np.arange(0, 22, 2),
+                                    num_step=20, num_epoch_per_step=10):
     with open(training_savepath, "rb") as handle:
         training_result = pkl.load(handle)
 
-    time_shift_list = np.arange(0, 22, 2)
-    num_step = 20
-    num_epoch_per_step = 10
     loss = training_result["loss"]
     final_losses = loss[num_step-1::num_step] # 9th, 19th, etc... (0 indexing)
 
@@ -1642,6 +1648,9 @@ def gradient_clipping(gradients, type="L2_norm"):
 def main(model_number=99,run_test_foward_algorithm=False, run_test_on_data=False, run_gradient_descent=False, run_plot_training_loss=False, run_plot_sigmoid=False, run_plot_test_loss=False,
          run_model=False, run_plot_time_shift_test=False, run_plot_hazard_rate=False, run_plot_trained_hazard_rate=False,
          run_benchmark_model=False, run_plot_time_shift_training_result=False, run_plot_posterior=False, run_control_model=False):
+
+    print("Running model: ", str(model_number))
+
     # datapath = "/media/timothysit/180C-2DDD/second_rotation_project/exp_data/subsetted_data/data_IO_083.pkl"
     exp_data_number = 83
     main_folder = os.path.join(home, "Dropbox/notes/Projects/second_rotation_project/normative_model")
@@ -1695,7 +1704,7 @@ def main(model_number=99,run_test_foward_algorithm=False, run_test_on_data=False
                                             training_savepath=training_savepath,
                                             init_param_vals=np.array([0.0, 0.1, 0.1]), # originally 10.0, 0.5, 0.1
                                             n_params=3, fit_hazard_rate=True,
-                                           time_shift_list=np.arange(0, 1), num_epoch=200, batch_size=512)
+                                           time_shift_list=np.arange(5, 10), num_epoch=200, batch_size=512)
         # batch size originally 128
 
         # sim 32:  time_shift_list=np.arange(0, 22, 2), num_epoch=200
@@ -1737,7 +1746,10 @@ def main(model_number=99,run_test_foward_algorithm=False, run_test_on_data=False
 
     if run_plot_time_shift_training_result is True:
         figsavepath = os.path.join(main_folder, "figures/time_shift_loss_model_" + str(model_number) + ".png")
-        plot_time_shift_training_result(training_savepath=training_savepath, figsavepath=figsavepath)
+        plot_time_shift_training_result(training_savepath=training_savepath, figsavepath=figsavepath,
+                                        time_shift_list=np.arange(0, 10, 1),
+                                        num_step=40, num_epoch_per_step=10
+                                        )
 
     if run_plot_posterior is True:
         figsavepath = os.path.join(main_folder, "figures/pure_posterior_exp_transition_matrix_window_40.png")
@@ -1746,9 +1758,9 @@ def main(model_number=99,run_test_foward_algorithm=False, run_test_on_data=False
 
 
 if __name__ == "__main__":
-    main(model_number=45, run_test_on_data=False, run_gradient_descent=False, run_plot_training_loss=False,
+    main(model_number=1002, run_test_on_data=False, run_gradient_descent=False, run_plot_training_loss=False,
          run_plot_sigmoid=False,
-         run_plot_test_loss=False, run_model=True, run_plot_time_shift_test=False,
+         run_plot_test_loss=False, run_model=False, run_plot_time_shift_test=False,
          run_plot_hazard_rate=False, run_plot_trained_hazard_rate=False, run_benchmark_model=False,
-         run_plot_time_shift_training_result=False, run_plot_posterior=False, run_control_model=False)
+         run_plot_time_shift_training_result=False, run_plot_posterior=False, run_control_model=True)
 
