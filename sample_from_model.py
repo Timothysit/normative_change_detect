@@ -186,6 +186,8 @@ def plot_psychometric(model_sample_path, mouse_beahviour_df_path=None, metric="p
             mouse_metric = "mouse_hit"
         elif metric == "false_alarm_prop":
             mouse_metric = "mouse_FA"
+        elif metric == "miss_prop":
+            mouse_metric = "mouse_miss"
         mouse_df = pd.read_pickle(mouse_beahviour_df_path)
         mouse_prop_choice = mouse_df.groupby(["change"], as_index=False).agg({mouse_metric: "mean"})
 
@@ -268,6 +270,7 @@ def get_mouse_behaviour_df(mouse_behaviour_path, savepath=None):
     # Experimental data
     mouse_dict["mouse_hit"] = (exp_data["outcome"] == "Hit").astype(float).flatten()
     mouse_dict["mouse_FA"] = (exp_data["outcome"] == "FA").astype(float).flatten()
+    mouse_dict["mouse_miss"] = (exp_data["outcome"] == "Miss").astype(float).flatten()
     # below, I use multiplication of two binary vectors in place of the "&" operation
     mouse_dict["correct_lick"] = (mouse_dict["change"] > 0).astype(float) * mouse_dict["mouse_hit"]
 
@@ -540,7 +543,7 @@ def main(model_number=20, mouse_number=83, run_get_mouse_df=True, run_sample_fro
     # plot_psychometric(model_sample_path, metric="prop_lick", label="Proportion of licks",
     #                  savepath=None, showfig=True)
 
-    # Plot psychoemtric curve with model and mouse
+    # Plot psychometric curve with model and mouse
     if run_plot_psychom_metric_comparison is True:
         figsavepath = os.path.join(mainfolder, "figures/licks_psychometric_curve_comparision_mouse" + str(mouse_number)
                                     + "_model_" + str(model_number))
@@ -558,6 +561,13 @@ def main(model_number=20, mouse_number=83, run_get_mouse_df=True, run_sample_fro
                                     + "_model_" + str(model_number))
         plot_psychometric(model_sample_path, mouse_df_path,
                       metric="false_alarm_prop", label="Proportion of false alarms", savepath=figsavepath)
+
+        # Misses
+        figsavepath = os.path.join(mainfolder, "figures/Miss_psychometric_curve_comparision_mouse" + str(mouse_number)
+                                    + "_model_" + str(model_number))
+        plot_psychometric(model_sample_path, mouse_df_path,
+                      metric="miss_prop", label="Proportion of misses", savepath=figsavepath)
+
 
 
     # savepath = os.path.join(mainfolder, "reaction_time_samples_model_" + str(model_number))
@@ -626,7 +636,7 @@ def main(model_number=20, mouse_number=83, run_get_mouse_df=True, run_sample_fro
 
 
 if __name__ == "__main__":
-    main(model_number=35, run_get_mouse_df=False, run_sample_from_model=False, run_plot_psychom_metric_comparison=False,
+    main(model_number=999, run_get_mouse_df=False, run_sample_from_model=True, run_plot_psychom_metric_comparison=False,
          run_plot_mouse_reaction_time=False,
          run_plot_model_reaction_time=False,
-         run_compare_model_and_mouse_dist=True)
+         run_compare_model_and_mouse_dist=False)
