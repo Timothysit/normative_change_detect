@@ -15,6 +15,7 @@ import matplotlib.pyplot as plt
 import scipy.io
 from tqdm import tqdm
 import itertools
+import random as baserandom # for random choice, not related to gradient descent
 
 import os
 import pickle as pkl
@@ -32,6 +33,7 @@ from jax.config import config
 def cal_p_x_given_z(x_k):
     z_mu = np.log(np.array([1.0, 1.25, 1.35, 1.50, 2.00, 4.00]))
     z_var = np.array([0.25, 0.25, 0.25, 0.25, 0.25, 0.25]) ** 2 # in actual data, std is 0.25
+    # TODO: Variance needs to be converted from base 2 form back to base e form
 
     # z_mu = np.log(np.array([1.0, 1.25]))
     # z_var = np.array([0.25, 0.25])
@@ -1586,7 +1588,7 @@ def plot_time_shift_training_result(training_savepath, figsavepath=None, time_sh
     plt.show()
 
 
-def plot_posterior(datapath, figsavepath=None):
+def plot_posterior(datapath, model_training_data_path=None, figsavepath=None):
 
     with open(datapath, "rb") as handle:
         exp_data = pkl.load(handle)
@@ -1640,14 +1642,93 @@ def plot_posterior(datapath, figsavepath=None):
 def gradient_clipping(gradients, type="L2_norm"):
     if type == "L2_norm":
         threshold = 10 # need to read what to set this to...
-        new_gradients = gradients * threshold / (gradients ** 2 / len(gradients)) # TODO: sohoudl be l2 norm
+        new_gradients = gradients * threshold / (gradients ** 2 / len(gradients)) # TODO: should be l2 norm
 
     return new_gradients
+
+def plot_signals(datapath):
+
+    with open(datapath, "rb") as handle:
+        exp_data = pkl.load(handle)
+
+    signal = exp_data["ys"].flatten()
+    random_index = baserandom.choice(np.arange(0, len(signal)))
+    signal_sample = signal[random_index].flatten()
+
+    # signal_sample = np.exp(signal_sample)
+    signal_sample = np.power(2, signal_sample)
+
+    change = np.exp(exp_data["sig"].flatten())
+    tau = exp_data["change"].flatten()
+
+    fig, ax = plt.subplots(1, 1, figsize=(8, 6))
+    ax.plot(signal_sample)
+    plt.show()
+
+    print("Signal mean before change time:", np.mean(signal_sample[:tau[random_index]]))
+    print("Signal mean after change time:", np.mean(signal_sample[tau[random_index]:]))
+
+    # TODO: Estimate the mean and variance from the data.
+
+def plot_trained_posterior(datapath, training_savepath, num_examples=10, random_seed=777,
+                           plot_peri_stimulus=True, figsavepath=None):
+
+    with open(datapath, "rb") as handle:
+        exp_data = pkl.load(handle)
+
+    change_values = np.exp(exp_data["sig"].flatten())
+    true_change_time = exp_data["change"].flatten() - 1 # 0 indexing
+
+    with open(training_savepath, "rb") as handle:
+        training_result = pkl.load(handle)
+
+    signal_matrix, lick_matrix = create_vectorised_data(datapath, lick_exponential_decay=False, decay_constant=0.5)
+
+    # get parameter with lowest training loss
+    loss = training_result["loss"]
+    epoch_num = onp.where(loss == min(loss))[0][0] # need to look through cost
+    params = training_result["param_val"][epoch_num]
+    num_non_hazard_rate_param = 2
+
+
+
+    # get the posterior with only posterior-relevant params
+    global transition_matrix_list
+    transition_matrix_list = make_transition_matrix(params[num_non_hazard_rate_param:])
+    vectorised_posterior_calc = vmap(forward_inference_custom_transition_matrix)
+    posterior = vectorised_posterior_calc(signal_matrix)
+
+    # use lick matrix to turn some of the posterior to NaNs
+    masked_posterior = np.where(lick_matrix==99, onp.nan, posterior)
+
+    fig, axs = plt.subplots(2, 3, figsize=(9, 6), sharey=True, sharex=True)
+    axs = axs.flatten()
+    if random_seed is not None:
+        onp.random.seed(random_seed)
+    for n, change_val in enumerate(onp.unique(change_values)):
+        change_val_index = onp.where(change_values == change_val)[0]
+        axs[n].set_title("Change magnitude: " + str(change_val))
+        for plot_index in onp.random.choice(change_val_index, num_examples):
+            if plot_peri_stimulus is True:
+                start_time = true_change_time[plot_index] - 20
+                end_time = true_change_time[plot_index] + 20
+                per_stimulus_time = np.arange(-20, 20)
+                axs[n].plot(per_stimulus_time, masked_posterior[plot_index, start_time:end_time], alpha=0.8)
+            else:
+                axs[n].plot(masked_posterior[plot_index, :], alpha=0.8)
+
+    if figsavepath is not None:
+        plt.savefig(figsavepath, dpi=300)
+
+    plt.show()
+
+
 
 
 def main(model_number=99,run_test_foward_algorithm=False, run_test_on_data=False, run_gradient_descent=False, run_plot_training_loss=False, run_plot_sigmoid=False, run_plot_test_loss=False,
          run_model=False, run_plot_time_shift_test=False, run_plot_hazard_rate=False, run_plot_trained_hazard_rate=False,
-         run_benchmark_model=False, run_plot_time_shift_training_result=False, run_plot_posterior=False, run_control_model=False):
+         run_benchmark_model=False, run_plot_time_shift_training_result=False, run_plot_posterior=False, run_control_model=False,
+         run_plot_signal=False, run_plot_trained_posterior=False):
 
     print("Running model: ", str(model_number))
 
@@ -1755,12 +1836,28 @@ def main(model_number=99,run_test_foward_algorithm=False, run_test_on_data=False
         figsavepath = os.path.join(main_folder, "figures/pure_posterior_exp_transition_matrix_window_40.png")
         plot_posterior(datapath=datapath, figsavepath=None)
 
+    if run_plot_signal is True:
+        plot_signals(datapath)
+
+    if run_plot_trained_posterior is True:
+        figsavepath = os.path.join(main_folder, "figures/trained_posterior_realtime" + "_model_" +str(model_number) +
+                                   "_mouse_" + str(exp_data_number))
+        plot_trained_posterior(datapath, training_savepath, plot_peri_stimulus=False, num_examples=10, random_seed=777,
+                               figsavepath=figsavepath)
+
+        figsavepath = os.path.join(main_folder, "figures/trained_posterior_peri_stimulus_time" + "_model_" +str(model_number) +
+                                   "_mouse_" + str(exp_data_number))
+        plot_trained_posterior(datapath, training_savepath, plot_peri_stimulus=True,
+                               num_examples=10, random_seed=777,
+                               figsavepath=figsavepath)
+
 
 
 if __name__ == "__main__":
-    main(model_number=1002, run_test_on_data=False, run_gradient_descent=False, run_plot_training_loss=False,
+    main(model_number=36, run_test_on_data=False, run_gradient_descent=False, run_plot_training_loss=False,
          run_plot_sigmoid=False,
          run_plot_test_loss=False, run_model=False, run_plot_time_shift_test=False,
          run_plot_hazard_rate=False, run_plot_trained_hazard_rate=False, run_benchmark_model=False,
-         run_plot_time_shift_training_result=False, run_plot_posterior=False, run_control_model=True)
+         run_plot_time_shift_training_result=False, run_plot_posterior=False, run_control_model=False,
+         run_plot_signal=False, run_plot_trained_posterior=True)
 
