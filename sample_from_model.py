@@ -28,7 +28,7 @@ def sample_from_model(model_data_path, num_samples=1000, plot_check=False, savep
     model_prob_output = model_data["model_vec_output"]
     actual_change_time = model_data["true_change_time"]
     change_value = model_data["change_value"]
-    subjective_change_value = model_data["subjective_change"]
+    # subjective_change_value = model_data["subjective_change"]
 
     # when change goes from 1.0 to 1.0, there is no change and so change time should be nan
     # actual_change_time = np.where(change_value == 1.0, np.nan, actual_change_time)
@@ -47,7 +47,7 @@ def sample_from_model(model_data_path, num_samples=1000, plot_check=False, savep
     individual_sample_actual_change_time = list()
     individual_sample_rt = list()
     individual_sample_change_value = list()
-    individual_sample_subjective_change_value = list()
+    # individual_sample_subjective_change_value = list()
     individual_sample_ID = list()
     individual_sample_FA = list()
     individual_sample_correct_lick = list()
@@ -76,7 +76,7 @@ def sample_from_model(model_data_path, num_samples=1000, plot_check=False, savep
         individual_sample_rt.append(model_rt)
         individual_sample_actual_change_time.append(np.repeat(actual_change_time[trial_num], repeats=num_samples))
         individual_sample_change_value.append(np.repeat(change_value[trial_num], repeats=num_samples))
-        individual_sample_subjective_change_value.append(np.repeat(subjective_change_value[trial_num], repeats=num_samples))
+        # individual_sample_subjective_change_value.append(np.repeat(subjective_change_value[trial_num], repeats=num_samples))
 
         # model_relative_rt = np.argmax(lick_samples, axis=1) - actual_change_time[trial_num]
 
@@ -143,7 +143,7 @@ def sample_from_model(model_data_path, num_samples=1000, plot_check=False, savep
 
     sampled_data = dict()
     sampled_data["change_value"] = change_value
-    sampled_data["subjective_change_value"] = subjective_change_value
+    # sampled_data["subjective_change_value"] = subjective_change_value
     sampled_data["actual_change_time"] = actual_change_time
     sampled_data["prop_lick"] = prop_lick_list
     sampled_data["early_lick_prop"] = early_lick_prop_list
@@ -170,7 +170,7 @@ def sample_from_model(model_data_path, num_samples=1000, plot_check=False, savep
     individual_sample_dict["absolute_decision_time"] = np.concatenate(individual_sample_rt).ravel()
     individual_sample_dict["peri_stimulus_rt"] = np.concatenate(individual_sample_rt).ravel() - individual_sample_dict["actual_change_time"]
     individual_sample_dict["change"] = np.log(np.concatenate(individual_sample_change_value).ravel())
-    individual_sample_dict["subjective_change_value"] = np.concatenate(individual_sample_subjective_change_value).ravel()
+    # individual_sample_dict["subjective_change_value"] = np.concatenate(individual_sample_subjective_change_value).ravel()
     individual_sample_df = pd.DataFrame.from_dict(individual_sample_dict)
 
     if savepath is not None:
@@ -634,7 +634,8 @@ def compare_model_and_mouse_dist(mouse_df_path, model_df_path, plot_type="FA", c
         plt.show()
 
 
-def plot_psychometric_individual_sample(mouse_df_path, model_df_path, metric="lick", plot_examples=False, ylabel="P(lick)", figsavepath=None):
+def plot_psychometric_individual_sample(mouse_df_path, model_df_path, metric="lick", plot_examples=False, ylabel="P(lick)",
+                                        remove_FA=False, figsavepath=None):
     """
 
     :param mouse_df_path:
@@ -656,8 +657,11 @@ def plot_psychometric_individual_sample(mouse_df_path, model_df_path, metric="li
         mouse_metric = "mouse_FA"
     elif metric == "miss":
         mouse_metric = "mouse_miss"
+    elif metric == "hit_sub":
+        mouse_metric = "hit_sub"
 
-    # Randmoly plot some samples of psychometric to check
+
+    # Randomly plot some samples of psychometric to check
     if plot_examples is True:
         random_sim_index = np.random.choice(np.unique(model_df["sample_ID"]), 9)
         fig, axs = plt.subplots(3, 3, figsize=(8, 6), sharex=True, sharey=True)
@@ -680,6 +684,15 @@ def plot_psychometric_individual_sample(mouse_df_path, model_df_path, metric="li
         plt.ylabel("P (licks)")
         plt.show()
 
+    ###### remove FA
+    if remove_FA is True:
+        model_no_FA_index = np.where(model_df["FA"] != 1)[0]
+        model_df = model_df.iloc[model_no_FA_index]
+
+        mouse_no_FA_index = np.where(mouse_df["mouse_FA"] != 1)[0]
+        mouse_df = mouse_df.iloc[mouse_no_FA_index]
+
+
     ###################### mean and std across simulations #####################
 
     fig, ax = plt.subplots(1, 1, figsize=(8, 6))
@@ -687,6 +700,8 @@ def plot_psychometric_individual_sample(mouse_df_path, model_df_path, metric="li
     df_prop_choice = df_prop_choice_all_simulations.groupby(["change"], as_index=False).agg({metric: "mean"})
     df_std = df_prop_choice_all_simulations.groupby(["change"], as_index=False).agg({metric: "std"})
     df_prop_choice["change"] = np.exp(df_prop_choice["change"])
+
+
 
     # Model
     ax.plot(df_prop_choice["change"], df_prop_choice[metric], label="Model")
@@ -714,10 +729,43 @@ def plot_psychometric_individual_sample(mouse_df_path, model_df_path, metric="li
 
     plt.show()
 
+
+def plot_plick_examples(model_data_path, plot_peri_stimulus=True, num_examples=10, random_seed=None, figsavepath=None):
+    """
+    Plot some example of the
+    :param model_data_path:
+    :return:
+    """
+
+    with open(model_data_path, "rb") as handle:
+        model_data = pkl.load(handle)
+
+    fig, axs = plt.subplots(3, 2, figsize=(8, 14), sharey=True, sharex=True)
+    axs = axs.flatten()
+    if random_seed is not None:
+        np.random.seed(777)
+    for n, change_val in enumerate(np.unique(model_data["change_value"])):
+        change_val_index = np.where(model_data["change_value"] == change_val)[0]
+        axs[n].set_title("Change magnitude: " + str(change_val))
+        for plot_index in np.random.choice(change_val_index, num_examples):
+            if plot_peri_stimulus is True:
+                start_time = model_data["true_change_time"][plot_index] - 20
+                end_time = model_data["true_change_time"][plot_index] + 20
+                per_stimulus_time = np.arange(-20, 20)
+                axs[n].plot(per_stimulus_time, model_data["model_vec_output"][plot_index][start_time:end_time], alpha=0.8)
+            else:
+                axs[n].plot(model_data["model_vec_output"][plot_index], alpha=0.8)
+
+    if figsavepath is not None:
+        plt.savefig(figsavepath, dpi=300)
+
+    plt.show()
+
+
 def main(model_number=20, mouse_number=83, run_get_mouse_df=True, run_sample_from_model=True, run_plot_psychom_metric_comparison=True,
          run_plot_mouse_reaction_time=True, run_plot_psychom_metric_comparison_subjective_change=False,
          run_plot_model_reaction_time=True, run_compare_model_and_mouse_dist=False, run_plot_prop_choice_dist=False,
-         run_plot_psychometrc_individual_sample=True):
+         run_plot_psychometrc_individual_sample=True, run_plot_plick_examples=False):
 
     # load data
     mainfolder = os.path.join(home, "Dropbox/notes/Projects/second_rotation_project/normative_model/")
@@ -875,11 +923,32 @@ def main(model_number=20, mouse_number=83, run_get_mouse_df=True, run_sample_fro
 
 
 
+
+        figsavepath = os.path.join(mainfolder, "figures/" + "FA_removed_" + "lick" + "_psychometric_mouse_" + str(mouse_number)
+                                     + "_model_" + str(model_number))
+
+        plot_psychometric_individual_sample(mouse_df_path, model_individual_sample_path, metric="lick", ylabel="P(lick)",
+                                           plot_examples=False, remove_FA=True, figsavepath=figsavepath)
+
+    if run_plot_plick_examples is True:
+        figsavepath = os.path.join(mainfolder, "figures/" + "plick_example_" + "real_time" + "_mouse_"
+                                   + str(mouse_number)
+                                   + "_model_" + str(model_number))
+        plot_plick_examples(model_data_path, plot_peri_stimulus=False, random_seed=777, figsavepath=figsavepath)
+
+        figsavepath = os.path.join(mainfolder, "figures/" + "plick_example_" + "peri_stimulus_time" + "_mouse_"
+                                   + str(mouse_number)
+                                   + "_model_" + str(model_number))
+        plot_plick_examples(model_data_path, plot_peri_stimulus=True, random_seed=777, figsavepath=figsavepath)
+
+
+
 if __name__ == "__main__":
-    main(model_number=999, run_get_mouse_df=False, run_sample_from_model=False, run_plot_psychom_metric_comparison=False,
+    main(model_number=36, run_get_mouse_df=False, run_sample_from_model=False, run_plot_psychom_metric_comparison=False,
          run_plot_psychom_metric_comparison_subjective_change=False,
          run_plot_mouse_reaction_time=False,
          run_plot_model_reaction_time=False,
          run_compare_model_and_mouse_dist=False,
          run_plot_prop_choice_dist=False,
-         run_plot_psychometrc_individual_sample=True)
+         run_plot_psychometrc_individual_sample=False,
+         run_plot_plick_examples=True)
