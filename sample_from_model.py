@@ -48,6 +48,9 @@ def sample_from_model(model_data_path, num_samples=1000, plot_check=False, savep
     individual_sample_rt = list()
     individual_sample_change_value = list()
     individual_sample_subjective_change_value = list()
+    individual_sample_ID = list()
+    individual_sample_FA = list()
+    individual_sample_correct_lick = list()
 
     print("Sampling from model")
     for trial_num, model_trial_output in tqdm(enumerate(model_prob_output)):
@@ -116,6 +119,12 @@ def sample_from_model(model_data_path, num_samples=1000, plot_check=False, savep
         correct_no_lick_list.append(correct_no_lick_prop)
         mean_model_rt_list.append(mean_model_rt)
 
+        # individual sample
+        individual_sample_ID.append(np.arange(1, num_samples+1))
+        individual_sample_FA.append((model_rt < actual_change_time[trial_num]).astype(float)) # 0s and 1s
+        # NaNs in reaction time (no licks) are counted as false (and therefore no false alarms)
+        individual_sample_correct_lick.append((model_rt >= actual_change_time[trial_num]).astype(float))
+
 
         # plot to check
         if plot_check is True:
@@ -151,7 +160,12 @@ def sample_from_model(model_data_path, num_samples=1000, plot_check=False, savep
     sampled_data_df = pd.DataFrame.from_dict(sampled_data)
 
     individual_sample_dict = dict()
+    # TODO: Make this into a 3D dataframe instead. or create sample ID
     # save data (flattening list of array with concat)
+    individual_sample_dict["sample_ID"] = np.concatenate(individual_sample_ID).ravel()
+    individual_sample_dict["FA"] = np.concatenate(individual_sample_FA).ravel()
+    individual_sample_dict["correct_lick"] = np.concatenate(individual_sample_correct_lick).ravel()
+    individual_sample_dict["lick"] = individual_sample_dict["FA"] + individual_sample_dict["correct_lick"]
     individual_sample_dict["actual_change_time"] = np.concatenate(individual_sample_actual_change_time).ravel()
     individual_sample_dict["absolute_decision_time"] = np.concatenate(individual_sample_rt).ravel()
     individual_sample_dict["peri_stimulus_rt"] = np.concatenate(individual_sample_rt).ravel() - individual_sample_dict["actual_change_time"]
@@ -166,6 +180,50 @@ def sample_from_model(model_data_path, num_samples=1000, plot_check=False, savep
     if model_individual_sample_path is not None:
         with open(model_individual_sample_path, "wb") as handle:
             pkl.dump(individual_sample_df, handle)
+
+
+
+
+def plot_prop_choice_dist(model_sample_path, mouse_beahviour_df_path, figsavepath=None):
+    df = pd.read_pickle(model_sample_path)
+    mouse_df = pd.read_pickle(mouse_beahviour_df_path)
+    # grid line across subplots: https://stackoverflow.com/questions/52095337/plotting-grids-across-the-subplots-python-matplotlib
+    fig, axs = plt.subplots(1, 6, figsize=(14, 4), sharey=True)
+
+    prop_lick_mean = list()
+    prop_lick_std = list()
+    for n, change_val in enumerate(np.unique(df["change_value"])):
+        change_val_index = np.where(df["change_value"] == change_val)[0]
+        df_subset = df.iloc[change_val_index]
+        sns.distplot(df_subset["prop_lick"], ax=axs[n])
+        axs[n].set_title("Change value: " + str(change_val))
+        axs[n].spines["top"].set_visible(False)
+        axs[n].spines["right"].set_visible(False)
+        if n > 0:
+            axs[n].spines["left"].set_visible(False)
+            axs[n].yaxis.set_ticks_position('none')
+        prop_lick_mean.append(np.mean(df_subset["prop_lick"]))
+        prop_lick_std.append(np.std(df_subset["prop_lick"]))
+
+
+    # shared gridlines (another method is to loop axhline the thing)
+    """
+    grid_line_ax = fig.add_subplot(111, zorder=-1)
+    grid_line_ax.tick_params(labelleft=False, labelbottom=False, left=False, right=False)
+    grid_line_ax.get_shared_y_axes().join(grid_line_ax, axs[0])
+    grid_line_ax.grid(axis="y")
+    """
+
+    if figsavepath is not None:
+        plt.savefig(figsavepath, dpi=300)
+
+    plt.show()
+
+
+    fig, axs = plt.subplots(2,1, figsize=(8, 6))
+    axs[0].plot(prop_lick_mean)
+    axs[1].plot(prop_lick_std)
+    plt.show()
 
 def plot_psychometric(model_sample_path, mouse_beahviour_df_path=None, metric="prop_lick", label="Proportion of licks",
                       savepath=None, showfig=True):
@@ -576,9 +634,90 @@ def compare_model_and_mouse_dist(mouse_df_path, model_df_path, plot_type="FA", c
         plt.show()
 
 
+def plot_psychometric_individual_sample(mouse_df_path, model_df_path, metric="lick", plot_examples=False, ylabel="P(lick)", figsavepath=None):
+    """
+
+    :param mouse_df_path:
+    :param model_df_path: must include individual samples (rather than averaged across simulations)
+    :param metric to plot on y-axis. Usually: FA, correct_lick, lick
+    :param figsavepath:
+    :return:
+    """
+
+    mouse_df = pd.read_pickle(mouse_df_path)
+    model_df = pd.read_pickle(model_df_path)
+
+    # TODO: likely will be more elegant with dict mapping
+    if metric == "lick":
+        mouse_metric = "mouse_lick"
+    elif metric == "correct_lick":
+        mouse_metric = "correct_lick"
+    elif metric == "FA":
+        mouse_metric = "mouse_FA"
+    elif metric == "miss":
+        mouse_metric = "mouse_miss"
+
+    # Randmoly plot some samples of psychometric to check
+    if plot_examples is True:
+        random_sim_index = np.random.choice(np.unique(model_df["sample_ID"]), 9)
+        fig, axs = plt.subplots(3, 3, figsize=(8, 6), sharex=True, sharey=True)
+        axs = axs.flatten()
+        for n, sim_index in enumerate(random_sim_index):
+            subset_index = np.where(model_df["sample_ID"] == sim_index)[0]
+            df_subset = model_df.iloc[subset_index]
+            df_prop_choice = df_subset.groupby(["change"], as_index=False).agg({metric: "mean"}) # mean here is actually used to get proportion
+            axs[n].plot(np.exp(df_prop_choice["change"]), df_prop_choice[metric], label="Model")
+            axs[n].set_title("Simulation: " + str(sim_index))
+            axs[n].spines["top"].set_visible(False)
+            axs[n].spines["right"].set_visible(False)
+
+        # common x y labels (and grid lines if necessary
+        fig.add_subplot(111, frameon=False)
+        # hide tick and tick label of the big axes
+        plt.tick_params(labelcolor='none', top=False, bottom=False, left=False, right=False)
+        plt.grid(False)
+        plt.xlabel("Change magnitude")
+        plt.ylabel("P (licks)")
+        plt.show()
+
+    ###################### mean and std across simulations #####################
+
+    fig, ax = plt.subplots(1, 1, figsize=(8, 6))
+    df_prop_choice_all_simulations = model_df.groupby(["change", "sample_ID"], as_index=False).agg({metric: "mean"})
+    df_prop_choice = df_prop_choice_all_simulations.groupby(["change"], as_index=False).agg({metric: "mean"})
+    df_std = df_prop_choice_all_simulations.groupby(["change"], as_index=False).agg({metric: "std"})
+    df_prop_choice["change"] = np.exp(df_prop_choice["change"])
+
+    # Model
+    ax.plot(df_prop_choice["change"], df_prop_choice[metric], label="Model")
+    ax.fill_between(df_prop_choice["change"], df_prop_choice[metric] - df_std[metric],
+                    df_prop_choice[metric] + df_std[metric], alpha=0.3)
+    ax.scatter(df_prop_choice["change"], df_prop_choice[metric], label=None, color="blue")
+
+    # Mouse
+    mouse_prop_choice = mouse_df.groupby(["change"], as_index=False).agg({mouse_metric: "mean"})
+
+    ax.plot(np.exp(mouse_prop_choice["change"]), mouse_prop_choice[mouse_metric], label="Mouse")
+    ax.scatter(np.exp(mouse_prop_choice["change"]), mouse_prop_choice[mouse_metric], label=None)
+
+    ax.legend(frameon=False)
+
+    ax.set_ylim([0, 1])
+    ax.set_xlabel("Change magnitude")
+    ax.set_ylabel(ylabel)
+
+    ax.spines["right"].set_visible(False)
+    ax.spines["top"].set_visible(False)
+
+    if figsavepath is not None:
+        plt.savefig(figsavepath)
+
+    plt.show()
+
 def main(model_number=20, mouse_number=83, run_get_mouse_df=True, run_sample_from_model=True, run_plot_psychom_metric_comparison=True,
          run_plot_mouse_reaction_time=True, run_plot_psychom_metric_comparison_subjective_change=False,
-         run_plot_model_reaction_time=True, run_compare_model_and_mouse_dist=False):
+         run_plot_model_reaction_time=True, run_compare_model_and_mouse_dist=False, run_plot_prop_choice_dist=False,
+         run_plot_psychometrc_individual_sample=True):
 
     # load data
     mainfolder = os.path.join(home, "Dropbox/notes/Projects/second_rotation_project/normative_model/")
@@ -720,11 +859,27 @@ def main(model_number=20, mouse_number=83, run_get_mouse_df=True, run_sample_fro
                                          change_magnitude=change_magnitude,
                                          show_model_sub_sample=None, showfig=False)
 
+    if run_plot_prop_choice_dist is True:
+        figsavepath = os.path.join(mainfolder, "figures/prop_choice_dist_" + str(model_number) + ".png")
+        plot_prop_choice_dist(model_sample_path, mouse_df_path, figsavepath=figsavepath)
+
+
+    if run_plot_psychometrc_individual_sample is True:
+        metric_to_plot = ["lick", "correct_lick", "FA"]
+        ylabel_list = ["P(Lick)", "P(Hit)", "P(False alarm)"]
+        for metric, ylabel in zip(metric_to_plot, ylabel_list):
+            figsavepath = os.path.join(mainfolder, "figures/" + metric + "_psychometric_mouse_" + str(mouse_number)
+                                    + "_model_" + str(model_number))
+            plot_psychometric_individual_sample(mouse_df_path, model_individual_sample_path, plot_examples=False,
+                                            metric=metric, ylabel=ylabel, figsavepath=figsavepath)
+
 
 
 if __name__ == "__main__":
-    main(model_number=1002, run_get_mouse_df=False, run_sample_from_model=True, run_plot_psychom_metric_comparison=True,
-         run_plot_psychom_metric_comparison_subjective_change=True,
-         run_plot_mouse_reaction_time=True,
-         run_plot_model_reaction_time=True,
-         run_compare_model_and_mouse_dist=True)
+    main(model_number=999, run_get_mouse_df=False, run_sample_from_model=False, run_plot_psychom_metric_comparison=False,
+         run_plot_psychom_metric_comparison_subjective_change=False,
+         run_plot_mouse_reaction_time=False,
+         run_plot_model_reaction_time=False,
+         run_compare_model_and_mouse_dist=False,
+         run_plot_prop_choice_dist=False,
+         run_plot_psychometrc_individual_sample=True)
