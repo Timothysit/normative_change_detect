@@ -6,6 +6,7 @@ import numpy.random as npr # randomisation for minibatch gradient descent
 from jax import grad, jit, vmap
 from jax.experimental import optimizers
 import jax.random as random
+import jax.lax as lax
 
 from jax import device_put  # onp operations not transferred to GPU, so they should run faster
 
@@ -401,7 +402,8 @@ def gradient_descent_fit_vector(exp_data_path, training_savepath, init_param_val
         pkl.dump(training_result, handle)
 
 
-def create_vectorised_data(exp_data_path, subset_trials=None, lick_exponential_decay=False, decay_constant=0.5):
+def create_vectorised_data(exp_data_path, subset_trials=None, lick_exponential_decay=False, decay_constant=0.5,
+                           full_trial_signal=False):
     """
     Create a matrix from signal and lick vectors of unequal length so that computations can be vectorised.
     :param exp_data_path:
@@ -436,7 +438,7 @@ def create_vectorised_data(exp_data_path, subset_trials=None, lick_exponential_d
     signal_matrix = onp.zeros(shape=(num_trial, max_time_bin))
 
     for n, s in enumerate(signal):
-        signal_matrix[n, :len(s[0])] = s[0]
+        signal_matrix[n, :len(s[0])] = s[0] # up to full length of the signal in the trial
         signal_matrix[n, len(s[0]):] = onp.random.normal(loc=change_magnitude[n], scale=0.0625,
                                                          size=(max_time_bin - len(s[0])))
 
@@ -651,7 +653,7 @@ def loss_function_batch(param_vals, batch):
     batch_predictions = batched_predict_lick(param_vals, signal)
     # batch_loss = batched_cross_entropy(actual_lick_vector=lick_matrix, p_lick=batch_predictions)
     # batch_loss = matrix_cross_entropy_loss(lick, batch_predictions)
-    batch_loss = matrix_weighted_cross_entropy_loss(lick, batch_predictions, alpha=1)
+    batch_loss = matrix_weighted_cross_entropy_loss(lick, batch_predictions, alpha=1, cumulative_lick=True)
 
     # adding log barrier
     # c = 10
@@ -706,20 +708,27 @@ def matrix_cross_entropy_loss(lick_matrix, prediction_matrix):
     return np.nansum(cross_entropy)  # nansum is just a quick fix, likely need to be more principled...
 
 
-def matrix_weighted_cross_entropy_loss(lick_matrix, prediction_matrix, alpha=1):
+def matrix_weighted_cross_entropy_loss(lick_matrix, prediction_matrix, alpha=1, cumulative_lick=False):
     mask = np.where(lick_matrix == 99, 0, 1)
     prediction_matrix_mask = np.where(prediction_matrix == 0.88888888, 0, 1)
     # cross_entropy = -(alpha * lick_matrix * np.log(prediction_matrix) + (1 - lick_matrix) * np.log(1-prediction_matrix))
     # cross_entropy = cross_entropy * mask * prediction_matrix_mask
 
-    # modifying cross entropy to prevent NaNs (probably due to underflow of predcition_matrix???)
+    ################## Cross entropy on the cumulative p(lick) ###########################
+    if cumulative_lick is True:
+        small_value = 1e-5 # can't be zero because then the cross entropy will have to do log(0)
+        prediction_matrix = np.where(prediction_matrix == 0.88888888, small_value, prediction_matrix) # time shift p(lick) = 0
+        prediction_matrix = batched_cumulative_lick(None, prediction_matrix)
+        prediction_matrix = np.where(prediction_matrix >=1, 1-small_value, prediction_matrix)
+        prediction_matrix = np.where(prediction_matrix <=0, small_value, prediction_matrix)
 
-    small_value = 1e-9
+    ################# Cross Entropy on the Instataneous p(lick) #######################
+    # modifying cross entropy to prevent NaNs (probably due to underflow of prediction_matrix?)
+    small_value = 0 # originally 1e-9
     cross_entropy = - (alpha * lick_matrix * np.log(np.maximum(prediction_matrix, small_value)) +
                       (1 - lick_matrix) * np.log(1 - np.maximum(prediction_matrix, small_value))
                       )
     cross_entropy = cross_entropy * mask * prediction_matrix_mask
-
 
     return np.sum(cross_entropy)
 
@@ -784,14 +793,16 @@ def run_through_dataset_fit_vector(datapath, savepath, training_savepath, param=
             training_result = pkl.load(handle)
 
     # normally -1 (last training epoch)
-    epoch_index = 179
+    min_loss_epoch_index = onp.where(training_result["loss"] == min(training_result["loss"]))[0][0]
+    # epoch_index = 179
+    epoch_index = min_loss_epoch_index
     param = training_result["param_val"][epoch_index]
     print("Parameter training loss: ",  str(training_result["loss"][epoch_index])) # just to double check
 
     # note that parameters do not need to be pre-processed
 
     global time_shift
-    time_shift = 5
+    time_shift = 6
 
 
     with open(datapath, "rb") as handle:
@@ -808,6 +819,23 @@ def run_through_dataset_fit_vector(datapath, savepath, training_savepath, param=
     # time-varying hazard rate
     # _, transition_matrix_list = get_hazard_rate(hazard_rate_type="subjective", datapath=datapath)
 
+    # Find out when the trial actually ends, and create a mask of that:
+    # (1 means trial still happening, 0 means those are padded signals)
+    # (onp is used here to allow assignment into array, which is valid because this procedure is not in gradient descent
+    trial_duration_list = list()
+    for s in signals:
+        trial_duration_list.append(len(s[0]))
+
+    num_trial = len(signals)
+    max_duration = onp.max(trial_duration_list)
+
+
+    trial_duration = onp.array(trial_duration_list) - 1 # convert to 0 indexing
+    trial_duration_mask = onp.zeros(shape=(num_trial, max_duration))
+
+    for n, trial_duration in enumerate(trial_duration_list):
+        trial_duration_mask[n, :trial_duration] = 1
+
 
     signal_matrix, lick_matrix = create_vectorised_data(datapath)
     # batched_predict_lick = vmap(predict_lick, in_axes=(None, 0))
@@ -822,18 +850,35 @@ def run_through_dataset_fit_vector(datapath, savepath, training_savepath, param=
     prediction_matrix = batched_predict_lick(param, signal_matrix)
     # prediction_matrix[lick_matrix == 99] = onp.nan
 
+    # Prediction matrix truncated by the lick time of the mouse
     prediction_matrix = np.where(lick_matrix == 99, onp.nan, prediction_matrix)
+
+    batched_cumulative_lick = vmap(predict_cumulative_lick, in_axes=(None, 0))
+    if time_shift == 0:
+        # if there is time shift, then can't use the initial padding values
+        # batched_cumulative_lick = vmap(predict_cumulative_lick, in_axes=(0, None))
+        cumulative_lick_matrix = batched_cumulative_lick(None, prediction_matrix)
+
+    # full signal matrix
+    full_signal_prediction_matrix = batched_predict_lick(param, signal_matrix)
+    full_signal_prediction_matrix = np.where(trial_duration_mask == 0, onp.nan, full_signal_prediction_matrix)
 
     if time_shift != 0:
         # convert baseline to something sensible
         baseline_p_lick = 0.0001
         prediction_matrix = np.where(prediction_matrix == 0.88888888, baseline_p_lick, prediction_matrix)
+        full_signal_prediction_matrix = np.where(full_signal_prediction_matrix == 0.88888888, baseline_p_lick,
+                                                 full_signal_prediction_matrix)
+
+        cumulative_lick_matrix = batched_cumulative_lick(None, prediction_matrix)
 
 
     vec_dict = dict()
     vec_dict["change_value"] = change
     vec_dict["rt"] = absolute_decision_time
     vec_dict["model_vec_output"] = prediction_matrix
+    vec_dict["model_vec_output_cumulative"] = cumulative_lick_matrix
+    vec_dict["full_signal_model_vec_output"] = full_signal_prediction_matrix
     vec_dict["true_change_time"] = tau
 
     with open(savepath, "wb") as handle:
@@ -1078,7 +1123,7 @@ def plot_training_loss(training_savepath, figsavepath=None):
     plt.show()
 
 
-def plot_sigmoid_comparisions(training_savepath, figsavepath=None):
+def plot_sigmoid_comparisions(training_savepath, plot_least_loss_sigmoid=False, figsavepath=None):
 
     with open(training_savepath, "rb") as handle:
         training_result = pkl.load(handle)
@@ -1089,6 +1134,11 @@ def plot_sigmoid_comparisions(training_savepath, figsavepath=None):
     total_num_set = len(parameters)
     set_index_to_plot = onp.round(onp.linspace(0, total_num_set-1, num_set_to_plot))
     epochs_plotted = (set_index_to_plot + 1) * epoch_step_size
+
+    # only plot the psychometric with the least cost
+    if plot_least_loss_sigmoid is True:
+        set_index_to_plot = onp.where(training_result["loss"] == min(training_result["loss"]))[0]
+        epochs_plotted = set_index_to_plot
 
     fake_posterior = np.linspace(0, 1, 1000)
 
@@ -1223,19 +1273,19 @@ def get_hazard_rate(hazard_rate_type="subjective", datapath=None, plot_hazard_ra
 
 def make_transition_matrix(hazard_rate_vec):
     # standard logistic function to contrain values to [0, 1]
-    # hazard_rate_vec = standard_sigmoid(hazard_rate_vec)
+    hazard_rate_vec = standard_sigmoid(hazard_rate_vec)
 
     # Custom logistic function to constrain values
     # small_value = 0.01
     # hazard_rate_vec = nonstandard_sigmoid(hazard_rate_vec, min_val=0, max_val=1, k=5)
 
     # softmax
-    hazard_rate_vec = softmax(hazard_rate_vec)
+    # hazard_rate_vec = softmax(hazard_rate_vec)
 
     # Directly clip the values
-    small_value = 1e-5
-    hazard_rate_vec = np.where(hazard_rate_vec <= 0, small_value, hazard_rate_vec)
-    hazard_rate_vec = np.where(hazard_rate_vec >= 1, 1-small_value, hazard_rate_vec)
+    # small_value = 1e-5
+    # hazard_rate_vec = np.where(hazard_rate_vec <= 0, small_value, hazard_rate_vec)
+    # hazard_rate_vec = np.where(hazard_rate_vec >= 1, 1-small_value, hazard_rate_vec)
 
     transition_matrix_list = list()
     for hazard_rate in hazard_rate_vec:
@@ -1272,11 +1322,11 @@ def gradient_descent_w_hazard_rate(exp_data_path, training_savepath, init_param_
     signal_matrix, lick_matrix = create_vectorised_data(exp_data_path,
                                                         lick_exponential_decay=True, decay_constant=1.0)
     # initialise hazard rate using experimental values
-    hazard_rate,_ = get_hazard_rate(hazard_rate_type="subjective", datapath=exp_data_path)
+    hazard_rate, _ = get_hazard_rate(hazard_rate_type="subjective", datapath=exp_data_path)
 
     # add a small vlaue so that none of them are 0 (prevent early clipping)
-    small_value = 0.01
-    hazard_rate = hazard_rate + small_value
+    # small_value = 0.01
+    # hazard_rate = hazard_rate + small_value
 
     # initialise hazard rate randomly
     # hazard_rate, _ = get_hazard_rate(hazard_rate_type="random", datapath=exp_data_path)
@@ -1284,8 +1334,8 @@ def gradient_descent_w_hazard_rate(exp_data_path, training_savepath, init_param_
     # random initialisation
     # key = random.PRNGKey(777)
     # hazard_rate_random = random.normal(key, shape=(len(hazard_rate), ))
-    small_baseline = 1e-5
-    hazard_rate = np.where(hazard_rate<=0, small_baseline, hazard_rate)
+    # small_baseline = 1e-5
+    # hazard_rate = np.where(hazard_rate<=0, small_baseline, hazard_rate)
 
     if fit_hazard_rate is True:
         init_param_vals = np.concatenate([init_param_vals, hazard_rate])
@@ -1305,6 +1355,9 @@ def gradient_descent_w_hazard_rate(exp_data_path, training_savepath, init_param_
         global transition_matrix_list
         _, transition_matrix_list = get_hazard_rate(hazard_rate_type="subjective", datapath=exp_data_path)
 
+    # for cases where the cumulative lick is used
+    global batched_cumulative_lick
+    batched_cumulative_lick = vmap(predict_cumulative_lick, in_axes=(None, 0))
 
     # print("Initial parameters:", init_param_vals)
 
@@ -1471,8 +1524,8 @@ def predict_lick_w_hazard_rate(param_vals, signal):
     # ^ note this works due to zero-indexing. (if num=2, then we start from index 2, which is the 3rd param)
 
     # add noise to the signal
-    key = random.PRNGKey(777)
-    signal = signal.flatten() + (random.normal(key, (len(signal.flatten()), )) * nonstandard_sigmoid(param_vals[2], min_val=0.0, max_val=1.0))
+    # key = random.PRNGKey(777)
+    # signal = signal.flatten() + (random.normal(key, (len(signal.flatten()), )) * nonstandard_sigmoid(param_vals[2], min_val=0.0, max_val=1.0))
     # multiply standard normal by constant: aX + b = N(au + b, a^2\sigma^2)
     posterior = forward_inference_custom_transition_matrix(signal)
 
@@ -1484,10 +1537,12 @@ def predict_lick_w_hazard_rate(param_vals, signal):
 
     p_lick = apply_cost_benefit(change_posterior=posterior, true_positive=1.0, true_negative=0.0,
                                 false_negative=0.0, false_positive=0.0) # param_vals[1]
-    # p_lick = apply_strategy(p_lick, k=param_vals[0], midpoint=param_vals[1])
+    p_lick = apply_strategy(p_lick, k=param_vals[0], midpoint=param_vals[1])
 
-    p_lick = apply_strategy(p_lick, k=nonstandard_sigmoid(param_vals[0], min_val=0.0, max_val=20), midpoint=nonstandard_sigmoid(param_vals[1], min_val=-10, max_val=10),
-                            max_val=1, min_val=0)
+    # p_lick = apply_strategy(p_lick, k=nonstandard_sigmoid(param_vals[0], min_val=0.0, max_val=20), midpoint=nonstandard_sigmoid(param_vals[1], min_val=-10, max_val=10),
+    #                         max_val=1, min_val=0)
+
+
 
     # Add time shift
     if time_shift > 0:
@@ -1500,9 +1555,37 @@ def predict_lick_w_hazard_rate(param_vals, signal):
         p_lick = np.concatenate([p_lick, np.repeat(baseline, abs(time_shift))])
         p_lick = p_lick[abs(time_shift):(len(signal.flatten()) + abs(time_shift))]
 
-
-
     return p_lick
+
+
+def predict_cumulative_lick(param, p_lick_instant):
+    p_lick_cumulative_list = list()
+    p_no_lick_cumulative_list = list()
+    p_no_lick_instant = 1 - p_lick_instant
+
+    p_lick_cumulative_list.append(p_lick_instant[0])
+    p_no_lick_cumulative_list.append(1 - p_lick_instant[0])
+
+    for time_step in np.arange(1, np.shape(p_lick_instant)[0]):
+        # p_lick_cumulative_list.append(predict_cumulative_lick_dynamic(p_lick_cumulative_list[time_step-1],
+        #                                                               p_lick_instant[time_step]))
+        # p_lick_cumulative = np.prod(p_no_lick_instant[:time_step]) * p_lick_instant[time_step] + \
+        #                     p_lick_cumulative_list[time_step-1]
+
+        # version of above without using np.prod (not supported by JAX versions before 2019-05-05)
+        # p_lick_cumulative = np.exp(np.sum(np.log(p_no_lick_instant[:time_step]))) * p_lick_instant[time_step] + \
+        #                        p_lick_cumulative_list[time_step-1]
+
+        # rewritten to not use dynamic slicing (only integer indexing
+        p_no_lick_cumulative_list.append(p_no_lick_cumulative_list[time_step-1] * (1 - p_lick_instant[time_step]))
+        p_lick_cumulative = p_no_lick_cumulative_list[time_step-1] * p_lick_instant[time_step] + \
+                            p_lick_cumulative_list[time_step-1]
+
+        p_lick_cumulative_list.append(p_lick_cumulative)
+
+    return np.array(p_lick_cumulative_list)
+
+
 
 def predict_lick_control(param, signal):
     posterior = forward_inference_custom_transition_matrix(signal.flatten())
@@ -1751,6 +1834,9 @@ def main(model_number=99,run_test_foward_algorithm=False, run_test_on_data=False
     3. midpoint of the sigmoid decision function
     """
 
+    signal_matrix, lick_matrix = create_vectorised_data(exp_data_path=datapath, subset_trials=None, lick_exponential_decay=False, decay_constant=0.5,
+                           full_trial_signal=False)
+
     if run_test_foward_algorithm is True:
         test_forward_algorithm()
 
@@ -1762,7 +1848,7 @@ def main(model_number=99,run_test_foward_algorithm=False, run_test_on_data=False
 
     if run_model is True:
         run_through_dataset_fit_vector(datapath=datapath, savepath=model_save_path, training_savepath=training_savepath,
-                                       num_non_hazard_rate_param=3,
+                                       num_non_hazard_rate_param=2,
                                        param=None)
 
     if run_control_model is True:
@@ -1783,9 +1869,10 @@ def main(model_number=99,run_test_foward_algorithm=False, run_test_on_data=False
 
         gradient_descent_w_hazard_rate(exp_data_path=datapath,
                                             training_savepath=training_savepath,
-                                            init_param_vals=np.array([0.0, 0.1, 0.1]), # originally 10.0, 0.5, 0.1
-                                            n_params=3, fit_hazard_rate=True,
-                                           time_shift_list=np.arange(5, 10), num_epoch=200, batch_size=512)
+                                            # init_param_vals=np.array([0.0, 0.1, 0.1]), # originally 10.0, 0.5, 0.1
+                                            init_param_vals = np.array([10.0, 0.5]),
+                                            n_params=2, fit_hazard_rate=True,
+                                           time_shift_list=np.arange(0, 10), num_epoch=100, batch_size=128)
         # batch size originally 128
 
         # sim 32:  time_shift_list=np.arange(0, 22, 2), num_epoch=200
@@ -1805,7 +1892,7 @@ def main(model_number=99,run_test_foward_algorithm=False, run_test_on_data=False
 
     if run_plot_sigmoid is True:
         figsavepath = os.path.join(main_folder, "figures/transfer_function_model" + str(model_number))
-        plot_sigmoid_comparisions(training_savepath, figsavepath=figsavepath)
+        plot_sigmoid_comparisions(training_savepath, plot_least_loss_sigmoid=True, figsavepath=figsavepath)
 
     if run_plot_trained_hazard_rate is True:
         figsavepath = os.path.join(main_folder, "figures/trained_hazard_rate" + str(model_number))
@@ -1854,10 +1941,10 @@ def main(model_number=99,run_test_foward_algorithm=False, run_test_on_data=False
 
 
 if __name__ == "__main__":
-    main(model_number=36, run_test_on_data=False, run_gradient_descent=False, run_plot_training_loss=False,
+    main(model_number=52, run_test_on_data=False, run_gradient_descent=True, run_plot_training_loss=False,
          run_plot_sigmoid=False,
          run_plot_test_loss=False, run_model=False, run_plot_time_shift_test=False,
          run_plot_hazard_rate=False, run_plot_trained_hazard_rate=False, run_benchmark_model=False,
          run_plot_time_shift_training_result=False, run_plot_posterior=False, run_control_model=False,
-         run_plot_signal=False, run_plot_trained_posterior=True)
+         run_plot_signal=False, run_plot_trained_posterior=False)
 
