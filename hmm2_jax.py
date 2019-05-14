@@ -656,7 +656,7 @@ def loss_function_batch(param_vals, batch):
     batch_predictions = batched_predict_lick(param_vals, signal)
     # batch_loss = batched_cross_entropy(actual_lick_vector=lick_matrix, p_lick=batch_predictions)
     # batch_loss = matrix_cross_entropy_loss(lick, batch_predictions)
-    batch_loss = matrix_weighted_cross_entropy_loss(lick, batch_predictions, alpha=1, cumulative_lick=True)
+    batch_loss = matrix_weighted_cross_entropy_loss(lick, batch_predictions, alpha=1, cumulative_lick=False)
 
     # adding log barrier
     # c = 10
@@ -781,7 +781,7 @@ def loss_function_fit_vector(param_vals):
 
     return cross_entropy_loss
 
-def run_through_dataset_fit_vector(datapath, savepath, training_savepath, param=None, num_non_hazard_rate_param=2):
+def run_through_dataset_fit_vector(datapath, savepath, training_savepath, param=None, num_non_hazard_rate_param=2, cv=False):
     """
     Takes in the experimental data, and makes inference of p(lick) for each time point given the stimuli
     :param datapath:
@@ -796,16 +796,23 @@ def run_through_dataset_fit_vector(datapath, savepath, training_savepath, param=
             training_result = pkl.load(handle)
 
     # normally -1 (last training epoch)
-    min_loss_epoch_index = onp.where(training_result["loss"] == min(training_result["loss"]))[0][0]
-    # epoch_index = 179
-    epoch_index = min_loss_epoch_index
-    param = training_result["param_val"][epoch_index]
-    print("Parameter training loss: ",  str(training_result["loss"][epoch_index])) # just to double check
+    if cv is False:
+        min_loss_epoch_index = onp.where(training_result["loss"] == min(training_result["loss"]))[0][0]
+        # epoch_index = 179
+        epoch_index = min_loss_epoch_index
+        param = training_result["param_val"][epoch_index]
+        print("Parameter training loss: ",  str(training_result["loss"][epoch_index])) # just to double check
+    else:
+        min_val_loss_epoch_index = onp.where(training_result["val_loss"] == min(training_result["val_loss"]))[0][0]
+        epoch_index = min_val_loss_epoch_index
+        param = training_result["param_val"][epoch_index]
+        print("Parameter training loss: ", str(training_result["val_loss"][epoch_index]))
+
 
     # note that parameters do not need to be pre-processed
 
     global time_shift
-    time_shift = 9
+    time_shift = 0
 
 
     with open(datapath, "rb") as handle:
@@ -1103,25 +1110,44 @@ def test_loss_function(datapath, plot_example=True, savepath=None):
         plt.savefig(savepath)
     plt.show()
 
-def plot_training_loss(training_savepath, figsavepath=None):
+def plot_training_loss(training_savepath, figsavepath=None, cv=False):
 
     with open(training_savepath, "rb") as handle:
         training_result = pkl.load(handle)
 
     epoch_per_step = 10
-    loss = training_result["loss"]
+    if cv is False:
+        loss = training_result["loss"]
+    else:
+        train_loss = training_result["train_loss"]
+        val_loss = training_result["val_loss"]
+        epoch = training_result["epoch"]
+
     parameters = training_result["param_val"]
 
-    fig, ax = plt.subplots(1, 1, figsize=(8, 6))
-    ax.plot(np.arange(1, len(loss)+1) * epoch_per_step, loss)
-    ax.set_ylabel("Loss")
-    ax.set_xlabel("Epochs")
+    if cv is False:
+        fig, ax = plt.subplots(1, 1, figsize=(8, 6))
+        ax.plot(np.arange(1, len(loss)+1) * epoch_per_step, loss)
+        ax.set_ylabel("Loss")
+        ax.set_xlabel("Epochs")
+        ax.spines["top"].set_visible(False)
+        ax.spines["right"].set_visible(False)
+    else:
+        fig, ax1 = plt.subplots(figsize=(8, 6))
+        ax1.plot(epoch, train_loss, label="tab:blue")
+        ax1.set_xlabel("Epoch")
+        ax1.set_ylabel("Training loss", color="tab:blue")
+        ax2 = ax1.twinx()
+        ax2.plot(epoch, val_loss, color="red")
+        ax2.set_ylabel("Validation loss", color="tab:red")
+        fig.tight_layout()
 
-    ax.spines["top"].set_visible(False)
-    ax.spines["right"].set_visible(False)
-
-    print("Minimum training loss:", str(min(loss)))
-    print("Epoch:", str(np.argmin(np.array(loss))))
+    if cv is False:
+        print("Minimum training loss:", str(min(loss)))
+        print("Epoch:", str(np.argmin(np.array(loss))))
+    else:
+        print("Minimum validation loss:", str(min(val_loss)))
+        print("Epoch:", str(np.argmin(np.array(val_loss))))
 
     if figsavepath is not None:
         plt.savefig(figsavepath, dpi=300)
@@ -1505,8 +1531,7 @@ def gradient_descent_w_cv(exp_data_path, training_savepath, init_param_vals=np.a
     global time_shift
 
     # loss_val_matrix = onp.zeros((num_epoch, len(time_shift_list)))
-    param_list = list()  # list of list, each list is the parameter values for a particular time shift
-    loss_val_list = list()
+
     # define batched prediction function using vmap
     global batched_predict_lick
 
@@ -1539,20 +1564,52 @@ def gradient_descent_w_cv(exp_data_path, training_savepath, init_param_vals=np.a
     mouse_reaction = exp_data["outcome"].flatten()
 
     le = LabelEncoder()
-    mouse_reaction = le.fit_transform(mouse_reaction)
+    mouse_reaction = le.fit_transform(mouse_reaction.tolist())
 
     mouse_reaction_df = pd.DataFrame({'trial': np.arange(0, len(mouse_reaction)),
                                       'outcome': mouse_reaction})
     y = mouse_reaction_df["outcome"]
 
-    X_train, X_test, y_train, y_test = train_test_split(X=mouse_reaction_df, y=y, test_size=0.1,
-                                       random_state=cv_random_seed, stratify=None)
+    # y_train and y_test are just placeholders. This is only used to obtain the indices.
+    X_dev, X_test, y_dev, y_test = train_test_split(mouse_reaction_df, y, test_size=0.1,
+                                       random_state=cv_random_seed, stratify=y)
+
+    # further split validation set
+    X_train, X_val, y_train, y_val = train_test_split(X_dev, y_dev, test_size=0.1,
+                                                      random_state=cv_random_seed, stratify=y_dev)
+
+    signal_matrix_test = signal_matrix[X_test["trial"], :]
+    signal_matrix_val = signal_matrix[X_val["trial"], :]
+    signal_matrix_train = signal_matrix[X_train["trial"], :]
+
+    lick_matrix_test = lick_matrix[X_test["trial"], :]
+    lick_matrix_val = lick_matrix[X_val["trial"], :]
+    lick_matrix_train = lick_matrix[X_train["trial"], :]
+
+    """
+    X_dev, X_test, y_dev, y_test = train_test_split(signal_matrix, lick_matrix, test_size=0.1,
+                                       random_state=cv_random_seed, stratify=y)
+
+    X_train, X_val, y_train, y_val = train_test_split(X_dev, y_dev, test_size=0.1,
+                                                   random_state=cv_random_seed, stratify=)
+    """
+
+    ######### STORE MODEL DATA
+    param_list = list()  # list of list, each list is the parameter values for a particular time shift
+    train_loss_list = list()
+    val_loss_list = list()
+    epoch_num_list = list()
+    test_loss_list = list()
+    time_shift_store = list()
+
+    ############ Hyperparameters for training the model
+    step_size = 0.02  # orignally 0.01
 
 
     for time_shift in tqdm(time_shift_list):
         print("Time shift: ", str(time_shift))
 
-        step_size = 0.01  # orignally 0.01
+
         momentum_mass = 0.4
         # opt_init, opt_update = optimizers.momentum(step_size, mass=momentum_mass)
         opt_init, opt_update = optimizers.adam(step_size, b1=0.9, b2=0.999, eps=1e-8)
@@ -1560,7 +1617,7 @@ def gradient_descent_w_cv(exp_data_path, training_savepath, init_param_vals=np.a
 
         # Minibatch gradient descent
         if batch_size is not None:
-            num_train = onp.shape(signal_matrix)[0]
+            num_train = onp.shape(signal_matrix_train)[0]
             num_complete_batches, leftover = divmod(num_train, batch_size)
             num_batches = num_complete_batches + bool(leftover)
 
@@ -1570,7 +1627,7 @@ def gradient_descent_w_cv(exp_data_path, training_savepath, init_param_vals=np.a
                     perm = rng.permutation(num_train)
                     for i in range(num_batches):
                         batch_idx = perm[i * batch_size:(i + 1) * batch_size]
-                        yield signal_matrix[batch_idx, :], lick_matrix[batch_idx, :]
+                        yield signal_matrix_train[batch_idx, :], lick_matrix_train[batch_idx, :]
 
             batches = data_stream()
 
@@ -1591,25 +1648,44 @@ def gradient_descent_w_cv(exp_data_path, training_savepath, init_param_vals=np.a
                 for _ in range(num_batches):
                     opt_state = step(epoch, opt_state, next(batches))
             else:
-                opt_state = step(epoch, opt_state, (signal_matrix, lick_matrix))
+                opt_state = step(epoch, opt_state, (signal_matrix_train, lick_matrix_train))
 
             if epoch % 10 == 0:
                 params = optimizers.get_params(opt_state)
                 # print("Parameters", params)
                 # loss_val = loss_function_fit_vector_faster(params)
-                loss_val = loss_function_batch(params, (signal_matrix, lick_matrix))
-                print("Loss:", loss_val)
-                loss_val_list.append(loss_val)
-                param_list.append(params)
-                # print("Parameters:", params)
+                train_loss = loss_function_batch(params, (signal_matrix_train, lick_matrix_train))
+                val_loss = loss_function_batch(params, (signal_matrix_val, lick_matrix_val))
+                print("Training loss:", train_loss)
+                train_loss_list.append(train_loss)
 
-                # TODO: Write function to auto-stop on convergence
+                print("Validation loss:", val_loss)
+                val_loss_list.append(val_loss)
+
+                param_list.append(params)
+                epoch_num_list.append(epoch)
+
+                time_shift_store.append(time_shift)
+
+                # TODO: Write function to auto-stop based on CV loss
+            # get test loss at the end of training
+            if epoch == num_epoch:
+                test_loss = loss_function_batch(params, (signal_matrix_test, lick_matrix_test))
+                test_loss_list.append(test_loss)
+
 
     training_result = dict()
-    training_result["loss"] = loss_val_list
+    training_result["train_loss"] = train_loss_list
+    training_result["val_loss"] = val_loss_list
+    training_result["test_loss"] = test_loss_list
     training_result["param_val"] = param_list
-    # TODO: Also save the time shift number and epoch number
-
+    training_result["time_shift"] = time_shift_store
+    training_result["epoch"] = epoch_num_list
+    training_result["batch_size"] = batch_size
+    training_result["step_size"] = step_size
+    training_result["train_set_size"] = len(y_train)
+    training_result["val_set_size"] = len(y_val)
+    training_result["test_set_size"] = len(y_test)
 
     with open(training_savepath, "wb") as handle:
         pkl.dump(training_result, handle)
@@ -1764,7 +1840,7 @@ def plot_trained_hazard_rate(training_savepath, figsavepath, num_non_hazard_rate
     fig, ax = plt.subplots(1, 1, figsize=(8, 6))
     ax.plot(standard_sigmoid(hazard_rate))
     # ax.plot(softmax(hazard_rate))
-    ax.set_xlabel("Time (frames")
+    ax.set_xlabel("Time (frames)")
     ax.set_ylabel("P(change)")
 
     ax.spines["right"].set_visible(False)
@@ -2018,6 +2094,7 @@ def main(model_number=99,run_test_foward_algorithm=False, run_test_on_data=False
     if run_model is True:
         run_through_dataset_fit_vector(datapath=datapath, savepath=model_save_path, training_savepath=training_savepath,
                                        num_non_hazard_rate_param=2,
+                                       cv=True,
                                        param=None)
 
     if run_control_model is True:
@@ -2037,21 +2114,21 @@ def main(model_number=99,run_test_foward_algorithm=False, run_test_on_data=False
         #                                     time_shift_list=np.arange(0, 102, 2), num_epoch=100)
 
         # gradient_descent_w_hazard_rate(exp_data_path=datapath,
-        #                                     training_savepath=training_savepath,
-        #                                     # init_param_vals=np.array([0.0, 0.1, 0.1]), # originally 10.0, 0.5, 0.1
-        #                                     init_param_vals = np.array([10.0, 0.5]),
-        #                                     n_params=2, fit_hazard_rate=True,
-        #                                    time_shift_list=np.arange(0, 1), num_epoch=500, batch_size=128)
+        #                                      training_savepath=training_savepath,
+        #                                      # init_param_vals=np.array([0.0, 0.1, 0.1]), # originally 10.0, 0.5, 0.1
+        #                                      init_param_vals = np.array([10.0, 0.5]),
+        #                                      n_params=2, fit_hazard_rate=True,
+        #                                     time_shift_list=np.arange(1, 3), num_epoch=200, batch_size=128)
         # batch size originally 128
 
         # sim 32:  time_shift_list=np.arange(0, 22, 2), num_epoch=200
 
         gradient_descent_w_cv(exp_data_path=datapath,
-                                            training_savepath=training_savepath,
-                                            # init_param_vals=np.array([0.0, 0.1, 0.1]), # originally 10.0, 0.5, 0.1
-                                            init_param_vals = np.array([10.0, 0.5]),
-                                            n_params=2, fit_hazard_rate=True,
-                                           time_shift_list=np.arange(0, 1), num_epoch=500, batch_size=512)
+                                             training_savepath=training_savepath,
+                                             # init_param_vals=np.array([0.0, 0.1, 0.1]), # originally 10.0, 0.5, 0.1
+                                             init_param_vals = np.array([10.0, 0.5]),
+                                             n_params=2, fit_hazard_rate=True,
+                                            time_shift_list=np.arange(0, 1), num_epoch=500, batch_size=512)
 
 
 
@@ -2063,7 +2140,7 @@ def main(model_number=99,run_test_foward_algorithm=False, run_test_on_data=False
 
     if run_plot_training_loss is True:
         figsavepath = os.path.join(main_folder, "figures/training_result_model" + str(model_number))
-        plot_training_loss(training_savepath, figsavepath=figsavepath)
+        plot_training_loss(training_savepath, figsavepath=figsavepath, cv=True)
 
     if run_plot_sigmoid is True:
         figsavepath = os.path.join(main_folder, "figures/transfer_function_model" + str(model_number))
@@ -2118,7 +2195,7 @@ def main(model_number=99,run_test_foward_algorithm=False, run_test_on_data=False
 
 
 if __name__ == "__main__":
-    main(model_number=54, run_test_on_data=False, run_gradient_descent=True, run_plot_training_loss=False,
+    main(model_number=56, run_test_on_data=False, run_gradient_descent=True, run_plot_training_loss=False,
          run_plot_sigmoid=False,
          run_plot_test_loss=False, run_model=False, run_plot_time_shift_test=False,
          run_plot_hazard_rate=False, run_plot_trained_hazard_rate=False, run_benchmark_model=False,
