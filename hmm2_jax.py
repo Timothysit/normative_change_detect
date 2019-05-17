@@ -838,8 +838,8 @@ def run_through_dataset_fit_vector(datapath, savepath, training_savepath, param=
     # normally -1 (last training epoch)
     if cv is False:
         min_loss_epoch_index = onp.where(training_result["loss"] == min(training_result["loss"]))[0][0]
-        # epoch_index = 179
-        epoch_index = min_loss_epoch_index
+        epoch_index = 399
+        # epoch_index = min_loss_epoch_index
         param = training_result["param_val"][epoch_index]
         print("Parameter training loss: ",  str(training_result["loss"][epoch_index])) # just to double check
     else:
@@ -1573,7 +1573,7 @@ def gradient_descent_w_cv(exp_data_path, training_savepath, init_param_vals=np.a
     global lick_matrix
 
     signal_matrix, lick_matrix = create_vectorised_data(exp_data_path,
-                                                        lick_exponential_decay=True, decay_constant=1.0)
+                                                        lick_exponential_decay=False, decay_constant=1.0)
     # initialise hazard rate using experimental values
     hazard_rate, _ = get_hazard_rate(hazard_rate_type="subjective", datapath=exp_data_path)
 
@@ -1707,7 +1707,9 @@ def gradient_descent_w_cv(exp_data_path, training_savepath, init_param_vals=np.a
 
             # get test loss at the end of training
             if epoch == num_epoch:
+                # TODO: used the best params...
                 test_loss = loss_function_batch(params, (signal_matrix_test, lick_matrix_test))
+                print("Test loss: " + str(test_loss))
                 test_loss_list.append(test_loss)
 
     training_result = dict()
@@ -1879,6 +1881,19 @@ def plot_trained_hazard_rate(training_savepath, figsavepath, num_non_hazard_rate
         plt.savefig(figsavepath, dpi=300)
 
     plt.show()
+
+
+def get_trained_hazard_rate(training_savepath, num_non_hazard_rate_param=2, epoch_num=1,
+                            param_process_method="sigmoid"):
+    with open(training_savepath, "rb") as handle:
+        training_result = pkl.load(handle)
+
+    trained_hazard_rate = training_result["param_val"][epoch_num][num_non_hazard_rate_param:]
+
+    if param_process_method == "sigmoid":
+        trained_hazard_rate = standard_sigmoid(trained_hazard_rate)
+
+    return trained_hazard_rate
 
 
 def benchmark_model(datapath, training_savepath, figsavepath=None, alpha=1):
@@ -2067,23 +2082,23 @@ def plot_trained_posterior(datapath, training_savepath, num_examples=10, random_
 
 
 
-def main(model_number=99,run_test_foward_algorithm=False, run_test_on_data=False, run_gradient_descent=False, run_plot_training_loss=False, run_plot_sigmoid=False, run_plot_test_loss=False,
+def main(model_number=99, exp_data_number=83, run_test_foward_algorithm=False, run_test_on_data=False, run_gradient_descent=False, run_plot_training_loss=False, run_plot_sigmoid=False, run_plot_test_loss=False,
          run_model=False, run_plot_time_shift_test=False, run_plot_hazard_rate=False, run_plot_trained_hazard_rate=False,
          run_benchmark_model=False, run_plot_time_shift_training_result=False, run_plot_posterior=False, run_control_model=False,
          run_plot_signal=False, run_plot_trained_posterior=False):
 
     print("Running model: ", str(model_number))
+    print("Using mouse: ", str(exp_data_number))
 
     # datapath = "/media/timothysit/180C-2DDD/second_rotation_project/exp_data/subsetted_data/data_IO_083.pkl"
-    exp_data_number = 83
     main_folder = os.path.join(home, "Dropbox/notes/Projects/second_rotation_project/normative_model")
     # TODO: generalise the code below
-    datapath = os.path.join(main_folder, "exp_data/subsetted_data/data_IO_083.pkl")
-    model_save_path = os.path.join(home, "Dropbox/notes/Projects/second_rotation_project/normative_model/hmm_data/model_response_0" + str(exp_data_number) + "_"
+    datapath = os.path.join(main_folder, "exp_data/subsetted_data/data_IO_0" + str(exp_data_number) + ".pkl")
+    model_save_path = os.path.join(main_folder, "/hmm_data/model_response_0" + str(exp_data_number) + "_"
                                    + str(model_number) + ".pkl")
-    fig_save_path = os.path.join(home, "Dropbox/notes/Projects/second_rotation_project/normative_model/figures/model_response_0" + str(exp_data_number) + "_"
+    fig_save_path = os.path.join(main_folder, "/figures/model_response_0" + str(exp_data_number) + "_"
                                    + str(model_number) + ".png")
-    training_savepath = os.path.join(home, "Dropbox/notes/Projects/second_rotation_project/normative_model/hmm_data/training_result_0" + str(exp_data_number) + "_"
+    training_savepath = os.path.join(main_folder, "/hmm_data/training_result_0" + str(exp_data_number) + "_"
                                    + str(model_number) + ".pkl")
 
     """
@@ -2094,6 +2109,7 @@ def main(model_number=99,run_test_foward_algorithm=False, run_test_on_data=False
     """
 
 
+
     if run_test_foward_algorithm is True:
         test_forward_algorithm()
 
@@ -2102,7 +2118,7 @@ def main(model_number=99,run_test_foward_algorithm=False, run_test_on_data=False
 
     if run_model is True:
         run_through_dataset_fit_vector(datapath=datapath, savepath=model_save_path, training_savepath=training_savepath,
-                                       num_non_hazard_rate_param=3,
+                                       num_non_hazard_rate_param=6,
                                        cv=True,
                                        param=None)
 
@@ -2130,7 +2146,7 @@ def main(model_number=99,run_test_foward_algorithm=False, run_test_on_data=False
                               # init_param_vals=np.array([0.0, 0.1, 0.1]), # originally 10.0, 0.5, 0.1
                               init_param_vals = np.array([10.0, 0.5, -3, 0.2, 0.2, 0.2]),
                               n_params=6, fit_hazard_rate=True,
-                              time_shift_list=np.arange(0, 10), num_epoch=500, batch_size=512,
+                              time_shift_list=np.arange(5, 8), num_epoch=500, batch_size=512,
                               fitted_params=["sigmoid_k", "sigmoid_midpoint", "stimulus_var",
                                              "true_negative", "false_negative", "false_positive",
                                              "hazard_rate"])
@@ -2143,7 +2159,7 @@ def main(model_number=99,run_test_foward_algorithm=False, run_test_on_data=False
 
     if run_plot_training_loss is True:
         figsavepath = os.path.join(main_folder, "figures/training_result_model" + str(model_number))
-        plot_training_loss(training_savepath, figsavepath=figsavepath, cv=True)
+        plot_training_loss(training_savepath, figsavepath=figsavepath, cv=True, time_shift=True)
 
     if run_plot_sigmoid is True:
         figsavepath = os.path.join(main_folder, "figures/transfer_function_model" + str(model_number))
@@ -2160,8 +2176,19 @@ def main(model_number=99,run_test_foward_algorithm=False, run_test_on_data=False
 
     if run_plot_hazard_rate is True:
         figsavepath = os.path.join(main_folder, "figures/hazard_rate_subjective_mouse_" + str(exp_data_number) + ".png")
-        get_hazard_rate(hazard_rate_type="subjective", datapath=datapath, plot_hazard_rate=True,
-                        figsavepath=figsavepath)
+        # get_hazard_rate(hazard_rate_type="subjective", datapath=datapath, plot_hazard_rate=True,
+        #                  figsavepath=figsavepath)
+
+        mouse_hazard_rate, _ = get_hazard_rate(hazard_rate_type="subjective", datapath=datapath, plot_hazard_rate=False,
+                        figsavepath=None)
+
+        model_hazard_rate = get_trained_hazard_rate(training_savepath, num_non_hazard_rate_param=6,
+                                                    epoch_num=348, param_process_method="sigmoid")
+        model_hazard_rate = model_hazard_rate[6:-11] # remove the time-shifted bits at the end
+        plt.plot(model_hazard_rate)
+        fig = nmt_plot.compare_model_mouse_hazard_rate(model_hazard_rate, mouse_hazard_rate,
+                                                       scale_method="sum")
+        plt.show()
 
     if run_benchmark_model is True:
         figsavepath = os.path.join(main_folder, "figures/loss_benchmark_model_" + str(model_number) + ".png")
@@ -2197,11 +2224,15 @@ def main(model_number=99,run_test_foward_algorithm=False, run_test_on_data=False
                                figsavepath=figsavepath, plot_cumulative=False)
 
 
+
+
 if __name__ == "__main__":
-    main(model_number=61, run_test_on_data=False, run_gradient_descent=True, run_plot_training_loss=False,
-         run_plot_sigmoid=False,
-         run_plot_test_loss=False, run_model=False, run_plot_time_shift_test=False,
-         run_plot_hazard_rate=False, run_plot_trained_hazard_rate=False, run_benchmark_model=False,
-         run_plot_time_shift_training_result=False, run_plot_posterior=False, run_control_model=False,
-         run_plot_signal=False, run_plot_trained_posterior=False)
+    exp_data_number_list = [75, 78, 79, 80, 81, 83]
+    for exp_data_number in exp_data_number_list:
+        main(model_number=62, exp_data_number=exp_data_number, run_test_on_data=False, run_gradient_descent=True,
+             run_plot_training_loss=False, run_plot_sigmoid=False,
+             run_plot_test_loss=False, run_model=False, run_plot_time_shift_test=False,
+             run_plot_hazard_rate=False, run_plot_trained_hazard_rate=False, run_benchmark_model=False,
+             run_plot_time_shift_training_result=False, run_plot_posterior=False, run_control_model=False,
+             run_plot_signal=False, run_plot_trained_posterior=False)
 
