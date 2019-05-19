@@ -16,7 +16,6 @@ import matplotlib.pyplot as plt
 import scipy.io
 from tqdm import tqdm
 import itertools
-import random as baserandom # for random choice, not related to gradient descent
 
 import os
 import pickle as pkl
@@ -929,7 +928,21 @@ def run_through_dataset_fit_vector(datapath, savepath, training_savepath, param=
         pkl.dump(vec_dict, handle)
 
 
-def control_model(datapath, savepath):
+def control_model(datapath, savepath, training_savepath, cv_random_seed=None, hazard_rate=0.0001,
+                  time_shift=None, fitted_params=None):
+    """
+    Obtain the instantaneous lick probability with the assumption that the mouse act directly from the posterior:
+    p(lick) = p(z_change at k | x_1:k). There are no tunable parameters in this model.
+    Hazard rate can be constant, or obtained from experimental data (but is not fitted).
+    :param datapath:
+    :param savepath: where the model output will be saved (ie. the p(lick) for use in sampling)
+    :param training_savepath: where the model training result will be saved (training, validation, test loss)
+    Since there are no fitted parameters in the control model, this will just be the loss of the model in one epoch.
+    :param hazard_rate: if hazard rate is a float, then it will be used a constant hazard rate value
+    if it is a string - "experimental" - then uses the hazard rate obtained via trial data
+    :param time_shift: time shift, if positive, then this is the delay between the posterior and p(lick)
+    :return:
+    """
 
     with open(datapath, "rb") as handle:
         exp_data = pkl.load(handle)
@@ -950,8 +963,11 @@ def control_model(datapath, savepath):
     signal_matrix, lick_matrix = create_vectorised_data(datapath)
 
     global transition_matrix_list
-    # _, transition_matrix_list = get_hazard_rate(hazard_rate_type="experimental", datapath=datapath)
-    _, transition_matrix_list = get_hazard_rate(hazard_rate_type="constant", datapath=datapath, constant_val=0.0001)
+    if hazard_rate == "experimental":
+        _, transition_matrix_list = get_hazard_rate(hazard_rate_type="experimental", datapath=datapath)
+    else:
+        _, transition_matrix_list = get_hazard_rate(hazard_rate_type="constant", datapath=datapath,
+                                                    constant_val=hazard_rate)
 
     global batched_predict_lick
     batched_predict_lick = vmap(predict_lick_control, in_axes=(None, 0))
@@ -960,12 +976,80 @@ def control_model(datapath, savepath):
     # Remove predictions after the mouse licks, since there are no real signals after the mouse licked
     prediction_matrix = np.where(lick_matrix == 99, onp.nan, prediction_matrix)
 
+    ## Get the training, cross-validation and test loss from the control model. ##
+    if cv_random_seed is None:
+        cv_random_seed = onp.random.seed()
+
+    mouse_reaction = exp_data["outcome"].flatten()
+
+    le = LabelEncoder()
+    mouse_reaction = le.fit_transform(mouse_reaction.tolist())
+
+    mouse_reaction_df = pd.DataFrame({'trial': np.arange(0, len(mouse_reaction)),
+                                      'outcome': mouse_reaction})
+    y = mouse_reaction_df["outcome"]
+
+    # y_train and y_test are just placeholders. This is only used to obtain the indices.
+    X_dev, X_test, y_dev, y_test = train_test_split(mouse_reaction_df, y, test_size=0.1,
+                                       random_state=cv_random_seed, stratify=y)
+
+    # further split validation set
+    X_train, X_val, y_train, y_val = train_test_split(X_dev, y_dev, test_size=0.1,
+                                                      random_state=cv_random_seed, stratify=y_dev)
+
+    signal_matrix_test = signal_matrix[X_test["trial"], :]
+    signal_matrix_val = signal_matrix[X_val["trial"], :]
+    signal_matrix_train = signal_matrix[X_train["trial"], :]
+
+    lick_matrix_test = lick_matrix[X_test["trial"], :]
+    lick_matrix_val = lick_matrix[X_val["trial"], :]
+    lick_matrix_train = lick_matrix[X_train["trial"], :]
+
+
+    training_result = dict()
+    set_names = ["test", "val", "train"]
+    for s_matrix, l_matrix, set_name in zip([signal_matrix_test, signal_matrix_val, signal_matrix_train],
+                                          [lick_matrix_test, lick_matrix_val, lick_matrix_train],
+                                            set_names):
+        model_output = batched_predict_lick(None, s_matrix)
+        model_output = np.where(l_matrix == 99, onp.nan, model_output) # remove model output with no mouse data
+        model_loss = matrix_weighted_cross_entropy_loss(l_matrix, model_output, alpha=1, cumulative_lick=False)
+        training_result[set_name + "_loss"] = model_loss
+
+
+
+    training_result["param_val"] = hazard_rate
+    training_result["time_shift"] = "None"
+    training_result["epoch"] = 1
+    training_result["batch_size"] = "None"
+    training_result["step_size"] = "None"
+    # TODO: things here can be put into the loop
+    training_result["train_set_size"] = len(y_train)
+    training_result["val_set_size"] = len(y_val)
+    training_result["test_set_size"] = len(y_test)
+    training_result["mean_train_loss"] = training_result["train_loss"] / len(y_train)
+    training_result["mean_val_loss"] = training_result["val_loss"] / len(y_val)
+    training_result["mean_test_loss"] = training_result["test_loss"] / len(y_test)
+
+    if fitted_params is None:
+        training_result["fitted_params"] = "None"
+    else:
+        training_result["fitted_params"] = fitted_params
+
+    with open(training_savepath, "wb") as handle:
+        pkl.dump(training_result, handle)
+
+
+    ## Save model output ##
+
     vec_dict = dict()
     vec_dict["change_value"] = change
     vec_dict["rt"] = absolute_decision_time
     vec_dict["model_vec_output"] = prediction_matrix
     vec_dict["true_change_time"] = tau
     vec_dict["subjective_change"] = subjective_change
+    vec_dict["hazard_rate"] = hazard_rate
+
 
     with open(savepath, "wb") as handle:
         pkl.dump(vec_dict, handle)
@@ -1142,115 +1226,6 @@ def test_loss_function(datapath, plot_example=True, savepath=None):
         plt.savefig(savepath)
     plt.show()
 
-
-def plot_training_loss(training_savepath, figsavepath=None, cv=False, time_shift=False):
-
-    with open(training_savepath, "rb") as handle:
-        training_result = pkl.load(handle)
-
-    epoch_per_step = 10
-    if cv is False:
-        loss = training_result["loss"]
-    else:
-        train_loss = training_result["train_loss"]
-        val_loss = training_result["val_loss"]
-        epoch = training_result["epoch"]
-        train_set_size = training_result["train_set_size"]
-        val_set_size = training_result["val_set_size"]
-
-        train_loss = np.hstack(train_loss)
-        val_loss = np.hstack(val_loss)
-
-    parameters = training_result["param_val"]
-
-    if cv is False:
-        fig, ax = plt.subplots(1, 1, figsize=(8, 6))
-        ax.plot(np.arange(1, len(loss)+1) * epoch_per_step, loss)
-        ax.set_ylabel("Loss")
-        ax.set_xlabel("Epochs")
-        ax.spines["top"].set_visible(False)
-        ax.spines["right"].set_visible(False)
-    elif cv is True and time_shift is False:
-        fig, ax1 = plt.subplots(figsize=(8, 6))
-        ax1.plot(epoch, train_loss / train_set_size, label="Training loss")
-        ax1.set_xlabel("Epoch")
-        # ax1.set_ylabel("Training loss", color="tab:blue")
-        # ax2 = ax1.twinx()
-        # ax2.plot(epoch, val_loss / val_set_size, color="red")
-        # ax2.set_ylabel("Validation loss", color="tab:red")
-
-        ax1.plot(epoch, val_loss / val_set_size, label="Validation loss")
-        ax1.set_ylabel("Mean loss")
-        ax1.legend(frameon=False)
-        fig.tight_layout()
-    elif cv is True and time_shift is True:
-        fig, ax = plt.subplots(2, 5, sharey=True, sharex=True)
-        ax = ax.flatten()
-        time_shift_list = training_result["time_shift"]
-        for n, time_shift in enumerate(onp.unique(time_shift_list)):
-            time_shift_index = onp.where(time_shift_list == time_shift)[0]
-            ax[n].plot(train_loss[time_shift_index] / train_set_size, label="Training loss")
-            ax[n].plot(val_loss[time_shift_index] / val_set_size, label="Validation loss")
-            ax[n].set_title("Time shift:" + str(time_shift))
-            ax[n].set_ylabel("Mean loss")
-
-    if cv is False:
-        print("Minimum training loss:", str(min(loss)))
-        print("Epoch:", str(np.argmin(np.array(loss))))
-    else:
-        print("Minimum validation loss:", str(min(val_loss)))
-        print("Minimum mean validation loss:", str(min(val_loss) / val_set_size))
-        print("Epoch:", str(np.argmin(np.array(val_loss))))
-
-
-    if figsavepath is not None:
-        plt.savefig(figsavepath, dpi=300)
-
-    plt.show()
-
-
-def plot_sigmoid_comparisions(training_savepath, plot_least_loss_sigmoid=False, figsavepath=None):
-
-    with open(training_savepath, "rb") as handle:
-        training_result = pkl.load(handle)
-
-    parameters = training_result["param_val"]
-    num_set_to_plot = 10
-    epoch_step_size = 10
-    total_num_set = len(parameters)
-    set_index_to_plot = onp.round(onp.linspace(0, total_num_set-1, num_set_to_plot))
-    epochs_plotted = (set_index_to_plot + 1) * epoch_step_size
-
-    # only plot the psychometric with the least cost
-    if plot_least_loss_sigmoid is True:
-        set_index_to_plot = onp.where(training_result["loss"] == min(training_result["loss"]))[0]
-        epochs_plotted = set_index_to_plot
-
-    fake_posterior = np.linspace(0, 1, 1000)
-
-    fig, ax = plt.subplots(1, 1, figsize=(8, 6))
-
-    for index in set_index_to_plot:
-
-        param_vals = parameters[int(index)]
-
-        p_lick = apply_cost_benefit(change_posterior=fake_posterior, true_positive=1.0, true_negative=0.0,
-                                    false_negative=0.0, false_positive=0.0) # param_vals[1]
-        p_lick = apply_strategy(p_lick, k=param_vals[0], midpoint=param_vals[1])
-
-        ax.plot(fake_posterior, p_lick)
-
-    ax.legend(list(epochs_plotted), frameon=False, title="Epochs")
-    ax.set_xlabel(r"$p(z_t = \mathrm{change} \vert x_{1:t})$")
-    ax.set_ylabel(r"$p(\mathrm{lick})$")
-
-    ax.spines["top"].set_visible(False)
-    ax.spines["right"].set_visible(False)
-
-    if figsavepath is not None:
-        plt.savefig(figsavepath, dpi=300)
-
-    plt.show()
 
 
 def plot_time_shift_test(exp_data_path, param=[10, 0.5], time_shift_list=[0, 1], trial_num=0):
@@ -1860,29 +1835,6 @@ def predict_lick_control(param, signal):
     return p_lick
 
 
-def plot_trained_hazard_rate(training_savepath, figsavepath, num_non_hazard_rate_param=2):
-    with open(training_savepath, "rb") as handle:
-        training_result = pkl.load(handle)
-
-    last_epoch_trained_param = training_result["param_val"][-1]
-    hazard_rate = last_epoch_trained_param[num_non_hazard_rate_param:]
-
-    fig, ax = plt.subplots(1, 1, figsize=(8, 6))
-    ax.plot(standard_sigmoid(hazard_rate))
-    # ax.plot(softmax(hazard_rate))
-    ax.set_xlabel("Time (frames)")
-    ax.set_ylabel("P(change)")
-
-    ax.spines["right"].set_visible(False)
-    ax.spines["top"].set_visible(False)
-
-
-    if figsavepath is not None:
-        plt.savefig(figsavepath, dpi=300)
-
-    plt.show()
-
-
 def get_trained_hazard_rate(training_savepath, num_non_hazard_rate_param=2, epoch_num=1,
                             param_process_method="sigmoid"):
     with open(training_savepath, "rb") as handle:
@@ -1947,51 +1899,6 @@ def plot_time_shift_training_result(training_savepath, figsavepath=None, time_sh
     plt.show()
 
 
-def plot_posterior(datapath, model_training_data_path=None, figsavepath=None):
-
-    with open(datapath, "rb") as handle:
-        exp_data = pkl.load(handle)
-
-    signals = exp_data["ys"]
-    change_magnitude = exp_data["sig"]
-    change_time = exp_data["change"]
-
-    # Plot mean posterior over time grouped by stimulus magnitude
-
-    posterior_list = list()
-
-    global transition_matrix_list
-    _, transition_matrix_list = get_hazard_rate(hazard_rate_type="experimental", datapath=datapath)
-
-    for signal in tqdm(signals):
-        print(np.shape(signal))
-        posterior = forward_inference_custom_transition_matrix(signal[0].flatten())
-        posterior_list.append(posterior)
-
-
-    fig, ax = plt.subplots(1, 1, figsize=(8, 6))
-    windowed_posterior = list()
-    window_length = 100
-    for change_mag in np.unique(change_magnitude):
-        change_index = onp.where(change_magnitude == change_mag)[0]
-        for index in change_index:
-            start_index = change_time[index] - window_length/2
-            end_index = change_time[index] + window_length/2
-            windowed_posterior.append(posterior_list[start_index:end_index])
-
-        windowed_posterior_array = np.array(windowed_posterior)
-        mean_posterior = np.mean(windowed_posterior, axis=0)
-
-        ax.plot(mean_posterior, label=str(change_mag))
-
-    ax.set_xlabel("Peri-change time (frames)")
-    ax.set_ylabel(r"$P(z_k = \mathrm{change} \vert x_{1:k})$")
-
-    if figsavepath is not None:
-        plt.savefig(figsavepath)
-
-    plt.show()
-
 
 def gradient_clipping(gradients, type="L2_norm"):
     if type == "L2_norm":
@@ -2000,29 +1907,6 @@ def gradient_clipping(gradients, type="L2_norm"):
 
     return new_gradients
 
-def plot_signals(datapath):
-
-    with open(datapath, "rb") as handle:
-        exp_data = pkl.load(handle)
-
-    signal = exp_data["ys"].flatten()
-    random_index = baserandom.choice(np.arange(0, len(signal)))
-    signal_sample = signal[random_index].flatten()
-
-    # signal_sample = np.exp(signal_sample)
-    signal_sample = np.power(2, signal_sample)
-
-    change = np.exp(exp_data["sig"].flatten())
-    tau = exp_data["change"].flatten()
-
-    fig, ax = plt.subplots(1, 1, figsize=(8, 6))
-    ax.plot(signal_sample)
-    plt.show()
-
-    print("Signal mean before change time:", np.mean(signal_sample[:tau[random_index]]))
-    print("Signal mean after change time:", np.mean(signal_sample[tau[random_index]:]))
-
-    # TODO: Estimate the mean and variance from the data.
 
 def plot_trained_posterior(datapath, training_savepath, num_examples=10, random_seed=777,
                            plot_peri_stimulus=True, figsavepath=None, plot_cumulative=False):
@@ -2094,12 +1978,14 @@ def main(model_number=99, exp_data_number=83, run_test_foward_algorithm=False, r
     main_folder = os.path.join(home, "Dropbox/notes/Projects/second_rotation_project/normative_model")
     # TODO: generalise the code below
     datapath = os.path.join(main_folder, "exp_data/subsetted_data/data_IO_0" + str(exp_data_number) + ".pkl")
-    model_save_path = os.path.join(main_folder, "/hmm_data/model_response_0" + str(exp_data_number) + "_"
+    model_save_path = os.path.join(main_folder, "hmm_data/model_response_0" + str(exp_data_number) + "_"
                                    + str(model_number) + ".pkl")
-    fig_save_path = os.path.join(main_folder, "/figures/model_response_0" + str(exp_data_number) + "_"
+    fig_save_path = os.path.join(main_folder, "figures/model_response_0" + str(exp_data_number) + "_"
                                    + str(model_number) + ".png")
-    training_savepath = os.path.join(main_folder, "/hmm_data/training_result_0" + str(exp_data_number) + "_"
+    training_savepath = os.path.join(main_folder, "hmm_data/training_result_0" + str(exp_data_number) + "_"
                                    + str(model_number) + ".pkl")
+
+    print("Saving training data to: ", training_savepath)
 
     """
     param: 
@@ -2107,8 +1993,6 @@ def main(model_number=99, exp_data_number=83, run_test_foward_algorithm=False, r
     2. false_negative value in cost-benefit function
     3. midpoint of the sigmoid decision function
     """
-
-
 
     if run_test_foward_algorithm is True:
         test_forward_algorithm()
@@ -2123,7 +2007,8 @@ def main(model_number=99, exp_data_number=83, run_test_foward_algorithm=False, r
                                        param=None)
 
     if run_control_model is True:
-        control_model(datapath=datapath, savepath=model_save_path)
+        control_model(datapath=datapath, savepath=model_save_path, training_savepath=training_savepath,
+                      cv_random_seed=777)
 
     if run_gradient_descent is True:
         # gradient_descent_fit_vector_faster(exp_data_path=datapath,
@@ -2143,13 +2028,15 @@ def main(model_number=99, exp_data_number=83, run_test_foward_algorithm=False, r
 
         gradient_descent_w_cv(exp_data_path=datapath,
                               training_savepath=training_savepath,
-                              # init_param_vals=np.array([0.0, 0.1, 0.1]), # originally 10.0, 0.5, 0.1
-                              init_param_vals = np.array([10.0, 0.5, -3, 0.2, 0.2, 0.2]),
-                              n_params=6, fit_hazard_rate=True,
-                              time_shift_list=np.arange(5, 8), num_epoch=500, batch_size=512,
-                              fitted_params=["sigmoid_k", "sigmoid_midpoint", "stimulus_var",
-                                             "true_negative", "false_negative", "false_positive",
-                                             "hazard_rate"])
+                              # init_param_vals = np.array([10.0, 0.5, -3, 0.2, 0.2, 0.2]),
+                              init_param_vals=np.array([None]),
+                              n_params=0, fit_hazard_rate=True,
+                              time_shift_list=np.arange(0, 1), num_epoch=500, batch_size=512,
+                              # fitted_params=["sigmoid_k", "sigmoid_midpoint", "stimulus_var",
+                              #                "true_negative", "false_negative", "false_positive",
+                              #                "hazard_rate"]
+                              fitted_params=["hazard_rate"]
+                              )
 
 
     if run_plot_test_loss is True:
@@ -2159,15 +2046,15 @@ def main(model_number=99, exp_data_number=83, run_test_foward_algorithm=False, r
 
     if run_plot_training_loss is True:
         figsavepath = os.path.join(main_folder, "figures/training_result_model" + str(model_number))
-        plot_training_loss(training_savepath, figsavepath=figsavepath, cv=True, time_shift=True)
+        nmt_plot.plot_training_loss(training_savepath, figsavepath=figsavepath, cv=True, time_shift=True)
 
     if run_plot_sigmoid is True:
         figsavepath = os.path.join(main_folder, "figures/transfer_function_model" + str(model_number))
-        plot_sigmoid_comparisions(training_savepath, plot_least_loss_sigmoid=True, figsavepath=figsavepath)
+        nmt_plot.plot_sigmoid_comparisions(training_savepath, plot_least_loss_sigmoid=True, figsavepath=figsavepath)
 
     if run_plot_trained_hazard_rate is True:
         figsavepath = os.path.join(main_folder, "figures/trained_hazard_rate" + str(model_number))
-        plot_trained_hazard_rate(training_savepath, figsavepath=figsavepath, num_non_hazard_rate_param=3)
+        nmt_plot.plot_trained_hazard_rate(training_savepath, figsavepath=figsavepath, num_non_hazard_rate_param=3)
 
 
     if run_plot_time_shift_test is True:
@@ -2203,10 +2090,10 @@ def main(model_number=99, exp_data_number=83, run_test_foward_algorithm=False, r
 
     if run_plot_posterior is True:
         figsavepath = os.path.join(main_folder, "figures/pure_posterior_exp_transition_matrix_window_40.png")
-        plot_posterior(datapath=datapath, figsavepath=None)
+        nmt_plot.plot_posterior(datapath=datapath, figsavepath=None)
 
     if run_plot_signal is True:
-        plot_signals(datapath)
+        nmt_plot.plot_signals(datapath)
 
     if run_plot_trained_posterior is True:
         figsavepath = os.path.join(main_folder, "figures/trained_posterior_realtime" + "_model_" +str(model_number) +
@@ -2224,15 +2111,13 @@ def main(model_number=99, exp_data_number=83, run_test_foward_algorithm=False, r
                                figsavepath=figsavepath, plot_cumulative=False)
 
 
-
-
 if __name__ == "__main__":
     exp_data_number_list = [75, 78, 79, 80, 81, 83]
     for exp_data_number in exp_data_number_list:
-        main(model_number=62, exp_data_number=exp_data_number, run_test_on_data=False, run_gradient_descent=True,
+        main(model_number=63, exp_data_number=exp_data_number, run_test_on_data=False, run_gradient_descent=False,
              run_plot_training_loss=False, run_plot_sigmoid=False,
              run_plot_test_loss=False, run_model=False, run_plot_time_shift_test=False,
              run_plot_hazard_rate=False, run_plot_trained_hazard_rate=False, run_benchmark_model=False,
-             run_plot_time_shift_training_result=False, run_plot_posterior=False, run_control_model=False,
+             run_plot_time_shift_training_result=False, run_plot_posterior=False, run_control_model=True,
              run_plot_signal=False, run_plot_trained_posterior=False)
 
