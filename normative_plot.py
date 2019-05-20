@@ -3,6 +3,8 @@ import matplotlib.pyplot as plt
 import matplotlib as mpl
 import numpy as np
 import random as baserandom # for random choice of signals/posterior to plot
+import pickle as pkl
+import pandas as pd
 
 # Plotting single model evaluation
 
@@ -240,6 +242,355 @@ def compare_model_mouse_hazard_rate(model_hazard_rate, mouse_hazard_rate, scale_
 
     return fig
 
+def plot_time_shift_test(exp_data_path, param=[10, 0.5], time_shift_list=[0, 1], trial_num=0):
+
+    signal_matrix, lick_matrix = create_vectorised_data(exp_data_path)
+
+    # subset to smaller size to compute faster
+    signal_matrix = signal_matrix[0:2, :]
+    lick_matrix = lick_matrix[0:2, :]
+
+    fig, axs = plt.subplots(1, 1, figsize=(8, 6))
+    axs.plot(lick_matrix[trial_num, :])
+
+    global time_shift
+    for time_shift in time_shift_list:
+        batched_predict_lick = vmap(predict_lick, in_axes=(None, 0))
+        prediction_matrix = batched_predict_lick(param, signal_matrix)
+        batch_loss = matrix_cross_entropy_loss(lick_matrix, prediction_matrix)
+
+        axs.plot(prediction_matrix[trial_num, :])
+        print("Loss: ", str(batch_loss))
+
+    plt.show()
+
+
+def plot_trained_posterior(datapath, training_savepath, num_examples=10, random_seed=777,
+                           plot_peri_stimulus=True, figsavepath=None, plot_cumulative=False):
+
+    with open(datapath, "rb") as handle:
+        exp_data = pkl.load(handle)
+
+    change_values = np.exp(exp_data["sig"].flatten())
+    true_change_time = exp_data["change"].flatten() - 1 # 0 indexing
+
+    with open(training_savepath, "rb") as handle:
+        training_result = pkl.load(handle)
+
+    signal_matrix, lick_matrix = create_vectorised_data(datapath, lick_exponential_decay=False, decay_constant=0.5)
+
+    # get parameter with lowest training loss
+    loss = training_result["loss"]
+    epoch_num = onp.where(loss == min(loss))[0][0] # need to look through cost
+    params = training_result["param_val"][epoch_num]
+    num_non_hazard_rate_param = 2
+
+    # get the posterior with only posterior-relevant params
+    global transition_matrix_list
+    transition_matrix_list = make_transition_matrix(params[num_non_hazard_rate_param:])
+    vectorised_posterior_calc = vmap(forward_inference_custom_transition_matrix)
+    posterior = vectorised_posterior_calc(signal_matrix)
+
+    # use lick matrix to turn some of the posterior to NaNs
+    masked_posterior = np.where(lick_matrix==99, onp.nan, posterior)
+
+    fig, axs = plt.subplots(2, 3, figsize=(9, 6), sharey=True, sharex=True)
+    axs = axs.flatten()
+    if random_seed is not None:
+        onp.random.seed(random_seed)
+    for n, change_val in enumerate(onp.unique(change_values)):
+        change_val_index = onp.where(change_values == change_val)[0]
+        axs[n].set_title("Change magnitude: " + str(change_val))
+        for plot_index in onp.random.choice(change_val_index, num_examples):
+            if plot_peri_stimulus is True:
+                start_time = true_change_time[plot_index] - 20
+                end_time = true_change_time[plot_index] + 20
+                peri_stimulus_time = np.arange(-20, 20)
+                axs[n].plot(peri_stimulus_time, masked_posterior[plot_index, start_time:end_time], alpha=0.8)
+                if plot_cumulative is True:
+                    cumulative_posterior = predict_cumulative_lick(None, masked_posterior[plot_index, :])
+                    axs[n].plot(peri_stimulus_time, cumulative_posterior[start_time:end_time], alpha=0.8, label="cumulative P(lick)")
+            else:
+                axs[n].plot(masked_posterior[plot_index, :], alpha=0.8)
+                if plot_cumulative is True:
+                    cumulative_posterior = predict_cumulative_lick(None, masked_posterior[plot_index, :])
+                    axs[n].plot(cumulative_posterior, alpha=0.8, label="cumulative P(lick)")
+
+    if figsavepath is not None:
+        plt.savefig(figsavepath, dpi=300)
+
+    plt.show()
+
+
+# Plot single model comparison with fitted mouse data
+
+
+def plot_psychometric_individual_sample(mouse_df_path, model_df_path, metric="lick", plot_examples=False, ylabel="P(lick)",
+                                        remove_FA=False, figsavepath=None, shade_statistic="std", showfig=True):
+    """
+
+    :param mouse_df_path:
+    :param model_df_path: must include individual samples (rather than averaged across simulations)
+    :param metric to plot on y-axis. Usually: FA, correct_lick, lick
+    :param figsavepath:
+    :param shade_statistic: the statistic used in the shading around the line plot
+        "std"        | shaded region is +/- 1 std from the mean/median
+        "confidence" | shaded region is the 95% confidence interval around the mean or median
+    :return:
+    """
+
+    mouse_df = pd.read_pickle(mouse_df_path)
+    model_df = pd.read_pickle(model_df_path)
+
+    # TODO: likely will be more elegant with dict mapping
+    if metric == "lick":
+        mouse_metric = "mouse_lick"
+    elif metric == "correct_lick":
+        mouse_metric = "correct_lick"
+    elif metric == "FA":
+        mouse_metric = "mouse_FA"
+    elif metric == "miss":
+        mouse_metric = "mouse_miss"
+    elif metric == "hit_sub":
+        mouse_metric = "hit_sub"
+
+
+    # Randomly plot some samples of psychometric to check
+    if plot_examples is True:
+        random_sim_index = np.random.choice(np.unique(model_df["sample_ID"]), 9)
+        fig, axs = plt.subplots(3, 3, figsize=(8, 6), sharex=True, sharey=True)
+        axs = axs.flatten()
+        for n, sim_index in enumerate(random_sim_index):
+            subset_index = np.where(model_df["sample_ID"] == sim_index)[0]
+            df_subset = model_df.iloc[subset_index]
+            df_prop_choice = df_subset.groupby(["change"], as_index=False).agg({metric: "mean"}) # mean here is actually used to get proportion
+            axs[n].plot(np.exp(df_prop_choice["change"]), df_prop_choice[metric], label="Model")
+            axs[n].set_title("Simulation: " + str(sim_index))
+            axs[n].spines["top"].set_visible(False)
+            axs[n].spines["right"].set_visible(False)
+
+        # common x y labels (and grid lines if necessary
+        fig.add_subplot(111, frameon=False)
+        # hide tick and tick label of the big axes
+        plt.tick_params(labelcolor='none', top=False, bottom=False, left=False, right=False)
+        plt.grid(False)
+        plt.xlabel("Change magnitude")
+        plt.ylabel("P (licks)")
+        plt.show()
+
+    ###### remove FA
+    if remove_FA is True:
+        # subset model df based on model FA
+        model_no_FA_index = np.where(model_df["FA"] != 1)[0]
+        model_df = model_df.iloc[model_no_FA_index]
+
+        # subset model df based on mouse FA
+        mouse_no_FA_index = np.where(mouse_df["mouse_FA"] != 1)[0]
+        model_df = model_df.loc[model_df["trial_ID"].isin(mouse_no_FA_index)]
+
+
+        mouse_no_FA_index = np.where(mouse_df["mouse_FA"] != 1)[0]
+        mouse_df = mouse_df.iloc[mouse_no_FA_index]
+
+
+    ###################### mean and std across simulations #####################
+
+    fig, ax = plt.subplots(1, 1, figsize=(8, 6))
+    df_prop_choice_all_simulations = model_df.groupby(["change", "sample_ID"], as_index=False).agg({metric: "mean"})
+    df_prop_choice = df_prop_choice_all_simulations.groupby(["change"], as_index=False).agg({metric: "mean"})
+    df_std = df_prop_choice_all_simulations.groupby(["change"], as_index=False).agg({metric: "std"})
+    df_sem = df_prop_choice_all_simulations.groupby(["change"], as_index=False).agg({metric: "sem"})
+    df_prop_choice["change"] = np.exp(df_prop_choice["change"])
+
+
+    # Model
+    ax.plot(df_prop_choice["change"], df_prop_choice[metric], label="Model")
+    if shade_statistic == "std":
+        ax.fill_between(df_prop_choice["change"], df_prop_choice[metric] - df_std[metric],
+                        df_prop_choice[metric] + df_std[metric], alpha=0.3)
+    elif shade_statistic == "confidence":
+        ax.fill_between(df_prop_choice["change"], df_prop_choice[metric] - df_sem[metric] * 1.96,
+                        df_prop_choice[metric] + df_sem[metric] * 1.96, alpha=0.3)
+
+    ax.scatter(df_prop_choice["change"], df_prop_choice[metric], label=None, color="blue")
+
+    # Mouse
+    mouse_prop_choice = mouse_df.groupby(["change"], as_index=False).agg({mouse_metric: "mean"})
+
+    ax.plot(np.exp(mouse_prop_choice["change"]), mouse_prop_choice[mouse_metric], label="Mouse")
+    ax.scatter(np.exp(mouse_prop_choice["change"]), mouse_prop_choice[mouse_metric], label=None)
+
+    ax.legend(frameon=False)
+
+    ax.set_ylim([0, 1])
+    ax.set_xlabel("Change magnitude")
+    ax.set_ylabel(ylabel)
+
+    ax.spines["right"].set_visible(False)
+    ax.spines["top"].set_visible(False)
+
+    if figsavepath is not None:
+        plt.savefig(figsavepath)
+
+    if showfig is True:
+        plt.show()
+
+
+def plot_psychometric(model_sample_path, mouse_beahviour_df_path=None, metric="prop_lick", label="Proportion of licks",
+                      savepath=None, showfig=True):
+    df = pd.read_pickle(model_sample_path)
+    df_prop_choice = df.groupby(["change_value"], as_index=False).agg({metric: "mean"})
+    df_std = df.groupby(["change_value"], as_index=False).agg({metric: "std"})
+
+    fig, ax = plt.subplots(figsize=(8, 6))
+
+    ax.plot(df_prop_choice["change_value"], df_prop_choice[metric], label="Model")
+    ax.fill_between(df_prop_choice["change_value"], df_prop_choice[metric] - df_std[metric],
+                    df_prop_choice[metric] + df_std[metric], alpha=0.3)
+    ax.scatter(df_prop_choice["change_value"], df_prop_choice[metric], label=None, color="blue")
+
+    # show all data points
+    # ax.scatter(df["change_value"], df[metric], alpha=0.1, color="b")
+
+    # Plot mouse behaviour as well
+    if mouse_beahviour_df_path is not None:
+        if metric == "prop_lick":
+            mouse_metric = "mouse_lick"
+        elif metric == "hit_prop":
+            mouse_metric = "mouse_hit"
+        elif metric == "false_alarm_prop":
+            mouse_metric = "mouse_FA"
+        elif metric == "miss_prop":
+            mouse_metric = "mouse_miss"
+        mouse_df = pd.read_pickle(mouse_beahviour_df_path)
+        mouse_prop_choice = mouse_df.groupby(["change"], as_index=False).agg({mouse_metric: "mean"})
+
+        ax.plot(np.exp(mouse_prop_choice["change"]), mouse_prop_choice[mouse_metric], label="Mouse")
+        ax.scatter(np.exp(mouse_prop_choice["change"]), mouse_prop_choice[mouse_metric], label=None)
+
+        ax.legend(frameon=False)
+
+    if "prop" in metric:
+        ax.set_ylim([0, 1.05])
+
+    ax.set_xlabel("Change magnitude")
+    ax.set_ylabel(label)
+
+    ax.spines["right"].set_visible(False)
+    ax.spines["top"].set_visible(False)
+
+    if savepath is not None:
+        plt.savefig(savepath, dpi=300)
+
+    if showfig is True:
+        plt.show()
+
+def plot_chronometric(mouse_df_path, model_df_path, summary_stat="median", figsavepath=None):
+    # TODO: psychometric plot can be generalised to incoporate this.
+    """
+    Plots median of peri-stimulus reaction time for Hits
+    :param mouse_df_path:
+    :param model_df_path:
+    :param figsavepath:
+    :return:
+    """
+
+    model_metric = "peri_stimulus_rt"
+    mouse_metric = "peri_stimulus_rt"
+
+    mouse_df = pd.read_pickle(mouse_df_path)
+    model_df = pd.read_pickle(model_df_path)
+
+    ##### Subset only HIT trials
+    model_hit_index = np.where(model_df["correct_lick"] == 1)[0]
+    mouse_hit_index = np.where(mouse_df["mouse_hit"] == 1)[0]
+
+    model_df = model_df.iloc[model_hit_index]
+    mouse_df = mouse_df.iloc[mouse_hit_index]
+
+    model_pivot_df = model_df.groupby(["change"], as_index=False).agg({model_metric: summary_stat})
+    mouse_pivot_df = mouse_df.groupby(["change"], as_index=False).agg({mouse_metric: summary_stat})
+
+
+    model_pivot_df["change"] = np.exp(model_pivot_df["change"])
+    mouse_pivot_df["change"] = np.exp(mouse_pivot_df["change"])
+
+    fig, ax = plt.subplots(figsize=(8, 6))
+
+    ax.plot(model_pivot_df["change"], model_pivot_df["peri_stimulus_rt"], label="Model")
+    ax.scatter(model_pivot_df["change"], model_pivot_df["peri_stimulus_rt"], label=None, color="blue")
+
+    ax.plot(mouse_pivot_df["change"], mouse_pivot_df["peri_stimulus_rt"], label="Mouse")
+    ax.scatter(mouse_pivot_df["change"], mouse_pivot_df["peri_stimulus_rt"], label=None, color="orange")
+
+    model_pivot_df_sem = model_df.groupby(["change"], as_index=False).agg({model_metric: "sem"})
+    ax.fill_between(model_pivot_df["change"], model_pivot_df["peri_stimulus_rt"] - 1.96 * model_pivot_df_sem[model_metric],
+                    model_pivot_df["peri_stimulus_rt"] + 1.96 * model_pivot_df_sem[model_metric])
+
+    ax.set_xlabel("Change magnitude")
+    ax.set_ylabel("Peri-change reaction time (frames)")
+
+    ax.legend(frameon=False)
+    ax.spines["right"].set_visible(False)
+    ax.spines["top"].set_visible(False)
+
+
+    if figsavepath is not None:
+        plt.savefig(figsavepath, dpi=300)
+
+    plt.show()
+
+
+def plot_psychometric_subjective(model_sample_path, mouse_beahviour_df_path=None, metric="prop_lick", label="Proportion of licks",
+                      savepath=None, showfig=True):
+    # TODO: This can be combined with plot_psychometric by specifying the groupby argument (separately for model and mouse)
+    df = pd.read_pickle(model_sample_path)
+    df_prop_choice = df.groupby(["subjective_change_value"], as_index=False).agg({metric: "mean"})
+    df_std = df.groupby(["subjective_change_value"], as_index=False).agg({metric: "std"})
+
+    fig, ax = plt.subplots(figsize=(8, 6))
+
+    ax.plot(df_prop_choice["subjective_change_value"], df_prop_choice[metric], label="Model")
+    ax.fill_between(df_prop_choice["subjective_change_value"], df_prop_choice[metric] - df_std[metric],
+                    df_prop_choice[metric] + df_std[metric], alpha=0.3)
+    ax.scatter(df_prop_choice["subjective_change_value"], df_prop_choice[metric], label=None, color="blue")
+
+    # show all data points
+    # ax.scatter(df["change_value"], df[metric], alpha=0.1, color="b")
+
+    # Plot mouse behaviour as well
+    if mouse_beahviour_df_path is not None:
+        if metric == "prop_lick":
+            mouse_metric = "mouse_lick"
+        elif metric == "hit_prop":
+            mouse_metric = "mouse_hit"
+        elif metric == "false_alarm_prop":
+            mouse_metric = "mouse_FA"
+        elif metric == "miss_prop":
+            mouse_metric = "mouse_miss"
+        mouse_df = pd.read_pickle(mouse_beahviour_df_path)
+        mouse_prop_choice = mouse_df.groupby(["subjective_change_value"], as_index=False).agg({mouse_metric: "mean"})
+
+        ax.plot(mouse_prop_choice["subjective_change_value"], mouse_prop_choice[mouse_metric], label="Mouse")
+        ax.scatter(mouse_prop_choice["subjective_change_value"], mouse_prop_choice[mouse_metric], label=None)
+
+        ax.legend(frameon=False)
+
+    if "prop" in metric:
+        ax.set_ylim([0, 1.05])
+
+    ax.set_xlabel("Subjective change magnitude")
+    ax.set_ylabel(label)
+
+    ax.spines["right"].set_visible(False)
+    ax.spines["top"].set_visible(False)
+
+    if savepath is not None:
+        plt.savefig(savepath, dpi=300)
+
+    if showfig is True:
+        plt.show()
+
 # Plotting evaluation across models
 
 
@@ -386,6 +737,51 @@ def plot_posterior(datapath, model_training_data_path=None, figsavepath=None):
 
     plt.show()
 
+
+def plot_signal_and_inference(signal, tau, prob, savepath=None):
+    fig, axs = plt.subplots(2, 1, figsize=(8, 6))
+
+    axs[0].plot(signal)
+    axs[0].axvline(tau, color="r", linestyle="--")
+
+    axs[1].plot(prob)
+
+    if savepath is not None:
+        plt.savefig(savepath, dpi=300)
+
+    plt.show()
+
+
+def plot_plick_examples(model_data_path, plot_peri_stimulus=True, num_examples=10, random_seed=None, figsavepath=None):
+    """
+    Plot some example of the
+    :param model_data_path:
+    :return:
+    """
+
+    with open(model_data_path, "rb") as handle:
+        model_data = pkl.load(handle)
+
+    fig, axs = plt.subplots(3, 2, figsize=(8, 14), sharey=True, sharex=True)
+    axs = axs.flatten()
+    if random_seed is not None:
+        np.random.seed(777)
+    for n, change_val in enumerate(np.unique(model_data["change_value"])):
+        change_val_index = np.where(model_data["change_value"] == change_val)[0]
+        axs[n].set_title("Change magnitude: " + str(change_val))
+        for plot_index in np.random.choice(change_val_index, num_examples):
+            if plot_peri_stimulus is True:
+                start_time = model_data["true_change_time"][plot_index] - 20
+                end_time = model_data["true_change_time"][plot_index] + 20
+                per_stimulus_time = np.arange(-20, 20)
+                axs[n].plot(per_stimulus_time, model_data["model_vec_output"][plot_index][start_time:end_time], alpha=0.8)
+            else:
+                axs[n].plot(model_data["model_vec_output"][plot_index], alpha=0.8)
+
+    if figsavepath is not None:
+        plt.savefig(figsavepath, dpi=300)
+
+    plt.show()
 
 
 # Helper functions
