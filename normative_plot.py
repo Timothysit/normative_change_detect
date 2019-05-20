@@ -5,6 +5,7 @@ import numpy as np
 import random as baserandom # for random choice of signals/posterior to plot
 import pickle as pkl
 import pandas as pd
+import seaborn as sns
 
 # Plotting single model evaluation
 
@@ -635,30 +636,87 @@ def plot_multi_model_psychometric_error(model_comparison_df):
     return fig
 
 
-def plot_multi_model_rt_error(model_comparison_df):
+def plot_multi_model_rt_error(model_comparison_df, multiple_mice=False, model_names=["Control", "Sigmoid decision"]):
 
+    if multiple_mice is False:
+        fig, ax = plt.subplots(figsize=(8, 6))
+
+        rt_metric = ["FA_rt_dist_fit", "hit_rt_dist_fit_1", "hit_rt_dist_fit_1p25", "hit_rt_dist_fit_1p35",
+                     "hit_rt_dist_fit_1p5", "hit_rt_dist_fit_2", "hit_rt_dist_fit_4"]
+        xoffset_list = np.arange(-0.6, 0.8, 0.2)
+        cmap = plt.get_cmap("Accent")
+        cm_subsection = np.linspace(0, 1, len(rt_metric))
+        color_list = [cmap(x) for x in cm_subsection]
+
+        for metric, col, xoffset in zip(rt_metric, color_list, xoffset_list):
+            ax.bar(x=model_comparison_df["model_number"] + xoffset,
+                   height=model_comparison_df[metric],
+                   width=0.2, align="center", color=col)
+
+
+        ax.set_xlabel("Model")
+        ax.spines["top"].set_visible(False)
+        ax.spines["right"].set_visible(False)
+
+        ax.set_ylabel("Kolmogorov-Smirnov test statistic")
+        ax.legend(["False alarm", "Hit: 1.0", "Hit: 1.25", "Hit: 1.35",
+                   "Hit: 1.5", "Hit: 2.0", "Hit: 4.0"], frameon=False)
+
+    else:
+        # compare multiple mice
+
+        rt_metric_list = ["FA_rt_dist_fit", "hit_rt_dist_fit_1", "hit_rt_dist_fit_1p25", "hit_rt_dist_fit_1p35",
+                     "hit_rt_dist_fit_1p5", "hit_rt_dist_fit_2", "hit_rt_dist_fit_4"]
+
+
+        fig, ax = plt.subplots(figsize=(8, 6))
+        plt.style.use("~/Dropbox/notes/Projects/second_rotation_project/normative_model/ts.mplstyle")
+        metric = "FA_rt_dist_fit"
+        model_comparison_df_pivot = pd.pivot_table(model_comparison_df, index="model_number", columns="mouse_number",
+                                                   values=metric)
+        ax.boxplot(x=model_comparison_df_pivot)
+        ax.grid()
+
+        num_models = np.shape(model_comparison_df_pivot)[0]
+        num_mice = np.shape(model_comparison_df_pivot)[1]
+        mouse_number_list = np.arange(1, num_mice+1)
+        for n, mouse_row in enumerate(model_comparison_df_pivot.values.T):
+            ax.plot(np.arange(1, num_models+1), mouse_row, linewidth=1.0, alpha=0.2)  # plot individual data points
+            ax.scatter(np.arange(1, num_models+1), mouse_row, alpha=0.8, edgecolors='none', s=10,
+                       label=str(mouse_number_list[n]))
+
+        ax.set_ylabel("KS statistic")
+        ax.set_xlabel("Model")
+        ax.legend(title="Mouse")
+
+        plt.xticks(ticks=[1, 2], labels=model_names)
+
+
+    return fig
+
+
+def ts_boxplot(df):
+    """
+    My own custom boxplot function which includes lines connecting individuals.
+    Note the strict format requirement of argument df
+    :param df: pivoted dataframe, where each row is a factor, and each column is an individual
+    :return:
+    """
     fig, ax = plt.subplots(figsize=(8, 6))
+    plt.style.use("~/Dropbox/notes/Projects/second_rotation_project/normative_model/ts.mplstyle")
+    ax.boxplot(x=df)
+    ax.grid()
 
-    rt_metric = ["FA_rt_dist_fit", "hit_rt_dist_fit_1", "hit_rt_dist_fit_1p25", "hit_rt_dist_fit_1p35",
-                 "hit_rt_dist_fit_1p5", "hit_rt_dist_fit_2", "hit_rt_dist_fit_4"]
-    xoffset_list = np.arange(-0.6, 0.8, 0.2)
-    cmap = plt.get_cmap("Accent")
-    cm_subsection = np.linspace(0, 1, len(rt_metric))
-    color_list = [cmap(x) for x in cm_subsection]
+    num_factors = np.shape(df)[0]
+    num_individuals = np.shape(df)[1]
+    individual_number_list = np.arange(1, num_individuals+1)
 
-    for metric, col, xoffset in zip(rt_metric, color_list, xoffset_list):
-        ax.bar(x=model_comparison_df["model_number"] + xoffset,
-               height=model_comparison_df[metric],
-               width=0.2, align="center", color=col)
+    for n, individual_row in enumerate(df.values.T):
+        ax.plot(np.arange(1, num_factors+1), individual_row, linewidth=1.0, alpha=0.2)  # plot individual data points
+        ax.scatter(np.arange(1, num_factors+1), individual_row, alpha=0.8, edgecolors='none', s=10,
+                   label=str(individual_number_list[n]))
 
-
-    ax.set_xlabel("Model")
-    ax.spines["top"].set_visible(False)
-    ax.spines["right"].set_visible(False)
-
-    ax.set_ylabel("Kolmogorov-Smirnov test statistic")
-    ax.legend(["False alarm", "Hit: 1.0", "Hit: 1.25", "Hit: 1.35",
-               "Hit: 1.5", "Hit: 2.0", "Hit: 4.0"], frameon=False)
+    return fig, ax
 
 
 # Plot experimental data / simple diagnostics
