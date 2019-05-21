@@ -1,6 +1,7 @@
 # All the plotting functions
 import matplotlib.pyplot as plt
 import matplotlib as mpl
+import matplotlib.gridspec as gridspec
 import numpy as np
 import random as baserandom # for random choice of signals/posterior to plot
 import pickle as pkl
@@ -133,22 +134,28 @@ def plot_sigmoid_comparisions(training_savepath, plot_least_loss_sigmoid=False, 
     plt.show()
 
 
-def plot_trained_hazard_rate(training_savepath, figsavepath, num_non_hazard_rate_param=2):
+def plot_trained_hazard_rate(training_savepath, sigmoid_function=None, num_non_hazard_rate_param=2):
     """
     Plot fitted hazard rate.
     :param training_savepath:
-    :param figsavepath:
+    :param sigmoid_function: sigmoid function used to convert between parameter and actual hazard rate
     :param num_non_hazard_rate_param:
     :return:
     """
     with open(training_savepath, "rb") as handle:
         training_result = pkl.load(handle)
 
-    last_epoch_trained_param = training_result["param_val"][-1]
-    hazard_rate = last_epoch_trained_param[num_non_hazard_rate_param:]
+    epoch_index = np.where(training_result["val_loss"] == np.nanmin(training_result["val_loss"]))[0][0]
+    epoch_param = training_result["param_val"][epoch_index]
+    hazard_rate = epoch_param[num_non_hazard_rate_param:]
+    hazard_rate = hazard_rate[:-10]  # remove the last few values, which are usually not runned through gradient descent
 
+    plt.style.use("~/Dropbox/notes/Projects/second_rotation_project/normative_model/ts.mplstyle")
     fig, ax = plt.subplots(1, 1, figsize=(8, 6))
-    ax.plot(standard_sigmoid(hazard_rate))
+    if sigmoid_function is None:
+        ax.plot(hazard_rate)
+    else:
+        ax.plot(sigmoid_function(hazard_rate))
     # ax.plot(softmax(hazard_rate))
     ax.set_xlabel("Time (frames)")
     ax.set_ylabel("P(change)")
@@ -156,11 +163,9 @@ def plot_trained_hazard_rate(training_savepath, figsavepath, num_non_hazard_rate
     ax.spines["right"].set_visible(False)
     ax.spines["top"].set_visible(False)
 
+    ax.grid()
 
-    if figsavepath is not None:
-        plt.savefig(figsavepath, dpi=300)
-
-    plt.show()
+    return fig, ax
 
 def plot_reaction_time_match(mouse_df, model_df, behaviour="FA", metric="absolute_decision_time"):
     # TODO: sort out where change_magnitude is
@@ -327,7 +332,7 @@ def plot_trained_posterior(datapath, training_savepath, num_examples=10, random_
 
 
 def plot_psychometric_individual_sample(mouse_df_path, model_df_path, metric="lick", plot_examples=False, ylabel="P(lick)",
-                                        remove_FA=False, figsavepath=None, shade_statistic="std", showfig=True):
+                                        remove_FA=False, shade_statistic="std"):
     """
 
     :param mouse_df_path:
@@ -423,18 +428,14 @@ def plot_psychometric_individual_sample(mouse_df_path, model_df_path, metric="li
 
     ax.legend(frameon=False)
 
-    ax.set_ylim([0, 1])
+    ax.set_ylim([-0.1, 1.1])
     ax.set_xlabel("Change magnitude")
     ax.set_ylabel(ylabel)
 
     ax.spines["right"].set_visible(False)
     ax.spines["top"].set_visible(False)
 
-    if figsavepath is not None:
-        plt.savefig(figsavepath)
-
-    if showfig is True:
-        plt.show()
+    return fig, ax
 
 
 def plot_psychometric(model_sample_path, mouse_beahviour_df_path=None, metric="prop_lick", label="Proportion of licks",
@@ -486,7 +487,7 @@ def plot_psychometric(model_sample_path, mouse_beahviour_df_path=None, metric="p
     if showfig is True:
         plt.show()
 
-def plot_chronometric(mouse_df_path, model_df_path, summary_stat="median", figsavepath=None):
+def plot_chronometric(mouse_df_path, model_df_path, summary_stat="median"):
     # TODO: psychometric plot can be generalised to incoporate this.
     """
     Plots median of peri-stimulus reaction time for Hits
@@ -535,11 +536,7 @@ def plot_chronometric(mouse_df_path, model_df_path, summary_stat="median", figsa
     ax.spines["right"].set_visible(False)
     ax.spines["top"].set_visible(False)
 
-
-    if figsavepath is not None:
-        plt.savefig(figsavepath, dpi=300)
-
-    plt.show()
+    return fig, ax
 
 
 def plot_psychometric_subjective(model_sample_path, mouse_beahviour_df_path=None, metric="prop_lick", label="Proportion of licks",
@@ -592,6 +589,126 @@ def plot_psychometric_subjective(model_sample_path, mouse_beahviour_df_path=None
     if showfig is True:
         plt.show()
 
+
+def compare_model_and_mouse_dist(mouse_df_path, model_df_path, plot_type="FA", change_magnitude=None, savepath=None,
+                                 strip_dot_size=2, strip_jitter=1, strip_dot_alpha=1, model_sub_sample=1000,
+                                 show_model_sub_sample=None, showfig=True):
+
+    mouse_df = pd.read_pickle(mouse_df_path)
+    model_df = pd.read_pickle(model_df_path)
+
+    # TODO: just add the response as a feature in the df
+    if plot_type == "FA":
+        mouse_hit_index = np.where((mouse_df["peri_stimulus_rt"]) >= 0 & (mouse_df["change"] > 0))[0]
+        mouse_df = mouse_df.loc[~mouse_df.index.isin(mouse_hit_index)]
+        model_hit_index = np.where((model_df["peri_stimulus_rt"]) >= 0 & (model_df["change"] > 0))[0]
+        model_df = model_df.loc[~model_df.index.isin(model_hit_index)]
+    elif plot_type == "Hit":
+        mouse_hit_index = np.where((mouse_df["peri_stimulus_rt"]) >= 0 & (np.exp(mouse_df["change"]) == change_magnitude))[0]
+        mouse_df = mouse_df.loc[mouse_df.index.isin(mouse_hit_index)]
+        model_hit_index = np.where((model_df["peri_stimulus_rt"]) >= 0 & (np.exp(model_df["change"]) == change_magnitude))[0]
+        model_df = model_df.loc[model_df.index.isin(model_hit_index)]
+
+
+    if model_sub_sample is not None:
+        model_df = model_df.sample(model_sub_sample)
+
+    plt.rc('text', usetex=True)
+    gs = gridspec.GridSpec(3, 1, height_ratios=[1, 0.5, 0.5])
+    ax1 = plt.subplot(gs[0])
+    ax2 = plt.subplot(gs[1], sharex=ax1)
+    ax3 = plt.subplot(gs[2], sharex=ax1)
+
+    axs = [ax1, ax2, ax3]
+
+    plt.setp(ax1.get_xticklabels(), visible=False)
+    plt.setp(ax2.get_xticklabels(), visible=False)
+
+    # remove tick marks
+    axs[1].tick_params(length=0)
+    axs[2].tick_params(axis="y", length=0)
+
+    if plot_type == "FA":
+        # first row: KDE of model and mouse
+        sns.kdeplot(mouse_df["absolute_decision_time"], shade=False, linewidth=3, vertical=False, alpha=0.5, ax=axs[0],
+                    label="Mouse")
+        sns.kdeplot(model_df["absolute_decision_time"], shade=False, linewidth=3, vertical=False, alpha=0.5, ax=axs[0],
+                    label="Model")
+        axs[0].legend(frameon=False)
+
+        # second row: mouse reaction times
+        sns.stripplot(x="absolute_decision_time", data=mouse_df,
+                      size=strip_dot_size, jitter=strip_jitter, alpha=strip_dot_alpha, ax=axs[1],
+                      color="blue")
+
+
+        # third row: model reaction times
+        if show_model_sub_sample is not None:
+            model_df = model_df.sample(show_model_sub_sample)
+
+        sns.stripplot(x="absolute_decision_time", data=model_df,
+                      size=strip_dot_size, jitter=strip_jitter, alpha=strip_dot_alpha, ax=axs[2],
+                      color="orange")
+
+        for ax in axs:
+            ax.spines["right"].set_visible(False)
+            ax.spines["top"].set_visible(False)
+
+        axs[0].spines["bottom"].set_visible(False)
+        axs[1].spines["bottom"].set_visible(False)
+
+        axs[1].spines["left"].set_visible(False)
+        axs[2].spines["left"].set_visible(False)
+
+        axs[2].set_xlabel("Time to lick (frames)")
+        axs[1].set_xlabel("")
+
+        ax1.set_xlim(xmin=0)
+    # TODO: There is significant overlap in the two conditions, can remove duplicates
+    elif plot_type == "Hit":
+        # first row: KDE of model and mouse
+        sns.kdeplot(mouse_df["peri_stimulus_rt"], shade=False, linewidth=3, vertical=False, alpha=0.5, ax=axs[0],
+                    label="Mouse")
+        sns.kdeplot(model_df["peri_stimulus_rt"], shade=False, linewidth=3, vertical=False, alpha=0.5, ax=axs[0],
+                    label="Model")
+        axs[0].legend(frameon=False)
+
+        # second row: mouse reaction times
+        sns.stripplot(x="peri_stimulus_rt", data=mouse_df,
+                      size=strip_dot_size, jitter=strip_jitter, alpha=strip_dot_alpha, ax=axs[1],
+                      color="blue")
+
+
+        # third row: model reaction times
+        if show_model_sub_sample is not None:
+            model_df = model_df.sample(show_model_sub_sample)
+
+        sns.stripplot(x="peri_stimulus_rt", data=model_df,
+                      size=strip_dot_size, jitter=strip_jitter, alpha=strip_dot_alpha, ax=axs[2],
+                      color="orange")
+
+
+        for ax in axs:
+            ax.spines["right"].set_visible(False)
+            ax.spines["top"].set_visible(False)
+
+        axs[0].spines["bottom"].set_visible(False)
+        axs[1].spines["bottom"].set_visible(False)
+
+        axs[1].spines["left"].set_visible(False)
+        axs[2].spines["left"].set_visible(False)
+
+        axs[2].set_xlabel("Peri-stimulus lick time (frame)")
+        axs[1].set_xlabel("")
+
+        ax1.set_xlim(xmin=0)
+
+    if savepath is not None:
+        plt.savefig(savepath, dpi=300)
+
+    if showfig is True:
+        plt.show()
+
 # Plotting evaluation across models
 
 
@@ -615,28 +732,40 @@ def plot_multi_model_loss(model_comparison_df):
 
     return fig
 
-def plot_multi_model_psychometric_error(model_comparison_df):
+def plot_multi_model_psychometric_error(model_comparison_df, multiple_mice=False,
+                                        model_names=["Control", "Sigmoid decision"],
+                                        metric="hit_exclude_FA_fit"):
 
-    fig, ax = plt.subplots(figsize=(8, 6))
-    psychometric_metric = ["hit_exclude_FA_fit"]
+    if multiple_mice is True:
+        model_comparison_df_pivot = pd.pivot_table(model_comparison_df, index="model_number", columns="mouse_number",
+                                                   values=metric)
+        fig, ax = ts_boxplot(df=model_comparison_df_pivot)
+        ax.set_ylabel("Mean-square error")
+        ax.set_xlabel("Model")
+        ax.legend(title="Mouse")
+        plt.xticks(ticks=[1, 2], labels=model_names)
+    else:
+        fig, ax = plt.subplots(figsize=(8, 6))
+        psychometric_metric = ["hit_exclude_FA_fit"]
 
-    color_list = ["blue", "green"] # "blue"
-    xoffset_list = [0.0, 0.25]
+        color_list = ["blue", "green"] # "blue"
+        xoffset_list = [0.0, 0.25]
 
-    for metric, col, xoffset in zip(psychometric_metric, color_list, xoffset_list):
-        ax.bar(x=model_comparison_df["model_number"] + xoffset,
-               height=model_comparison_df[metric],
-               width=0.2, align="center", color=col)
+        for metric, col, xoffset in zip(psychometric_metric, color_list, xoffset_list):
+            ax.bar(x=model_comparison_df["model_number"] + xoffset,
+                   height=model_comparison_df[metric],
+                   width=0.2, align="center", color=col)
 
-    ax.set_ylabel("Mean-square error")
-    ax.set_xlabel("Model")
-    ax.spines["top"].set_visible(False)
-    ax.spines["right"].set_visible(False)
+        ax.set_ylabel("Mean-square error")
+        ax.set_xlabel("Model")
+        ax.spines["top"].set_visible(False)
+        ax.spines["right"].set_visible(False)
 
-    return fig
+    return fig, ax
 
 
-def plot_multi_model_rt_error(model_comparison_df, multiple_mice=False, model_names=["Control", "Sigmoid decision"]):
+def plot_multi_model_rt_error(model_comparison_df, multiple_mice=False, model_names=["Control", "Sigmoid decision"],
+                              rt_metric="FA_rt_dist_fit"):
 
     if multiple_mice is False:
         fig, ax = plt.subplots(figsize=(8, 6))
@@ -664,33 +793,13 @@ def plot_multi_model_rt_error(model_comparison_df, multiple_mice=False, model_na
 
     else:
         # compare multiple mice
-
-        rt_metric_list = ["FA_rt_dist_fit", "hit_rt_dist_fit_1", "hit_rt_dist_fit_1p25", "hit_rt_dist_fit_1p35",
-                     "hit_rt_dist_fit_1p5", "hit_rt_dist_fit_2", "hit_rt_dist_fit_4"]
-
-
-        fig, ax = plt.subplots(figsize=(8, 6))
-        plt.style.use("~/Dropbox/notes/Projects/second_rotation_project/normative_model/ts.mplstyle")
-        metric = "FA_rt_dist_fit"
         model_comparison_df_pivot = pd.pivot_table(model_comparison_df, index="model_number", columns="mouse_number",
-                                                   values=metric)
-        ax.boxplot(x=model_comparison_df_pivot)
-        ax.grid()
-
-        num_models = np.shape(model_comparison_df_pivot)[0]
-        num_mice = np.shape(model_comparison_df_pivot)[1]
-        mouse_number_list = np.arange(1, num_mice+1)
-        for n, mouse_row in enumerate(model_comparison_df_pivot.values.T):
-            ax.plot(np.arange(1, num_models+1), mouse_row, linewidth=1.0, alpha=0.2)  # plot individual data points
-            ax.scatter(np.arange(1, num_models+1), mouse_row, alpha=0.8, edgecolors='none', s=10,
-                       label=str(mouse_number_list[n]))
-
+                                                   values=rt_metric)
+        fig, ax = ts_boxplot(df=model_comparison_df_pivot)
         ax.set_ylabel("KS statistic")
         ax.set_xlabel("Model")
         ax.legend(title="Mouse")
-
         plt.xticks(ticks=[1, 2], labels=model_names)
-
 
     return fig
 
@@ -702,8 +811,8 @@ def ts_boxplot(df):
     :param df: pivoted dataframe, where each row is a factor, and each column is an individual
     :return:
     """
-    fig, ax = plt.subplots(figsize=(8, 6))
     plt.style.use("~/Dropbox/notes/Projects/second_rotation_project/normative_model/ts.mplstyle")
+    fig, ax = plt.subplots(figsize=(8, 6))
     ax.boxplot(x=df)
     ax.grid()
 
@@ -848,3 +957,37 @@ def plot_plick_examples(model_data_path, plot_peri_stimulus=True, num_examples=1
 def _softmax(x):
     """Compute softmax values for each sets of scores in x."""
     return np.exp(x) / np.sum(np.exp(x), axis=0)
+
+
+def _standard_sigmoid(input):
+    # Naive version:
+    # output = 1.0 / (1.0 + np.exp(-input))
+    # Numerically stable version
+    """
+    if input >= 0:
+        z = np.exp(-input)
+        output = 1.0 / (1.0 + z)
+    else:
+        z = np.exp(input)
+        output = z / (1.0 + z)
+    """
+
+    # Numerically stable and applied to an array
+    output = np.where(input >= 0,
+                    1.0 / (1.0 + np.exp(-input)),
+                    np.exp(input) / (1.0 + np.exp(input)))
+
+
+    return output
+
+def _nonstandard_sigmoid(input, min_val=0.0, max_val=1.0, k=1, midpoint=0.5):
+    # naive implementation
+    # output = (max_val - min_val) / (1.0 + np.exp(-input)) + min_val
+
+    # Numerically stable and applied to an array
+    output = np.where(input >= 0,
+                      (max_val - min_val) / (1.0 + np.exp(-(input - midpoint) * k)) + min_val,
+                      (max_val - min_val) * np.exp((input - midpoint) * k) / (1.0 + np.exp((input - midpoint) * k))
+                      + min_val)
+
+    return output
