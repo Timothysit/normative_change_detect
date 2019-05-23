@@ -34,7 +34,7 @@ from sklearn.preprocessing import LabelEncoder
 
 # Plotting functions
 import normative_plot as nmt_plot
-
+import functools  # to pass around sigmoid functions for plotting
 
 def cal_p_x_given_z(x_k):
     z_mu = np.log(np.array([1.0, 1.25, 1.35, 1.50, 2.00, 4.00]))
@@ -1651,7 +1651,10 @@ def gradient_descent_w_cv(exp_data_path, training_savepath, init_param_vals=np.a
     signal_matrix, lick_matrix = create_vectorised_data(exp_data_path,
                                                         lick_exponential_decay=False, decay_constant=1.0)
     # initialise hazard rate using experimental values
-    hazard_rate, _ = get_hazard_rate(hazard_rate_type="subjective", datapath=exp_data_path)
+    # hazard_rate, _ = get_hazard_rate(hazard_rate_type="subjective", datapath=exp_data_path)
+
+    # fit constant hazard rate
+    hazard_rate = 0.01
 
     # add a bit of noise to it (so there are no identical values)
     # key = random.PRNGKey(777)
@@ -1663,7 +1666,7 @@ def gradient_descent_w_cv(exp_data_path, training_savepath, init_param_vals=np.a
         init_param_vals = np.concatenate([init_param_vals, hazard_rate])
 
     global time_shift
-    time_shift = 0  # For debugging only
+    # time_shift = 0  # For debugging only
 
     # loss_val_matrix = onp.zeros((num_epoch, len(time_shift_list)))
 
@@ -1681,7 +1684,7 @@ def gradient_descent_w_cv(exp_data_path, training_savepath, init_param_vals=np.a
     global batched_cumulative_lick
     batched_cumulative_lick = vmap(predict_cumulative_lick, in_axes=(None, 0))
 
-    prediction_matrix = batched_predict_lick(init_param_vals, signal_matrix)
+    # prediction_matrix = batched_predict_lick(init_param_vals, signal_matrix)  # for debugging only
 
     # print("Initial parameters:", init_param_vals)
 
@@ -1721,6 +1724,10 @@ def gradient_descent_w_cv(exp_data_path, training_savepath, init_param_vals=np.a
     lick_matrix_test = lick_matrix[X_test["trial"], :]
     lick_matrix_val = lick_matrix[X_val["trial"], :]
     lick_matrix_train = lick_matrix[X_train["trial"], :]
+
+    # For use when training a constant hazard rate
+    global max_signal_length
+    max_signal_length = np.shape(lick_matrix)[1]
 
     # Store model data
     param_list = list()  # list of list, each list is the parameter values for a particular time shift
@@ -1875,8 +1882,12 @@ def predict_lick_w_hazard_rate(param_vals, signal):
 
     # posterior = forward_inference_w_tricks(signal.flatten())
     global transition_matrix_list
-    transition_matrix_list = make_transition_matrix(hazard_rate_vec=param_vals[num_non_hazard_rate_params:])
+    # transition_matrix_list = make_transition_matrix(hazard_rate_vec=param_vals[num_non_hazard_rate_params:])
     # ^ note this works due to zero-indexing. (if num=2, then we start from index 2, which is the 3rd param)
+
+    # constant tunable hazard rate
+    hazard_rate_param = np.repeat(param_vals[num_non_hazard_rate_params:], max_signal_length)
+    transition_matrix_list = make_transition_matrix(hazard_rate_vec=hazard_rate_param)
 
     # add noise to the signal
     # key = random.PRNGKey(777)
@@ -1889,19 +1900,19 @@ def predict_lick_w_hazard_rate(param_vals, signal):
     posterior = np.where(posterior >= 1.0, 1-small_value, posterior) # I've seen
     # rounding errors where the output is 1.0000001 (strange)
     # Flagging just in case it as cosequences to other models...
-    posterior = np.where(posterior <= 0.0, small_value, posterior)  # preventunderflow
+    posterior = np.where(posterior <= 0.0, small_value, posterior)  # prevent underflow
 
     # no noise in the signal
     # posterior = forward_inference_custom_transition_matrix(signal.flatten())
 
     # p_lick = apply_cost_benefit(change_posterior=posterior, true_positive=1.0, true_negative=param_vals[3],
     #                             false_negative=param_vals[4], false_positive=param_vals[5]) # param_vals[1]
-    # p_lick = apply_strategy(p_lick, k=param_vals[0], midpoint=param_vals[1])
+    p_lick = apply_strategy(posterior, k=param_vals[0], midpoint=param_vals[1])
 
     # Use posterior and p_lick directly
-    p_lick = posterior
+    # p_lick = posterior
 
-    # p_lick = apply_strategy(p_lick, k=nonstandard_sigmoid(param_vals[0], min_val=0.0, max_val=20),
+     #p_lick = apply_strategy(p_lick, k=nonstandard_sigmoid(param_vals[0], min_val=0.0, max_val=20),
     # midpoint=nonstandard_sigmoid(param_vals[1], min_val=-10, max_val=10),
     #                         max_val=1, min_val=0)
 
@@ -2028,7 +2039,7 @@ def gradient_clipping(gradients, type="L2_norm"):
 def main(model_number=99, exp_data_number=83, run_test_foward_algorithm=False, run_test_on_data=False, run_gradient_descent=False, run_plot_training_loss=False, run_plot_sigmoid=False, run_plot_test_loss=False,
          run_model=False, run_plot_time_shift_test=False, run_plot_hazard_rate=False, run_plot_trained_hazard_rate=False,
          run_benchmark_model=False, run_plot_time_shift_training_result=False, run_plot_posterior=False, run_control_model=False,
-         run_plot_signal=False, run_plot_trained_posterior=False):
+         run_plot_signal=False, run_plot_trained_posterior=False, run_plot_trained_sigmoid=False):
     home = expanduser("~")
     print("Running model: ", str(model_number))
     print("Using mouse: ", str(exp_data_number))
@@ -2062,7 +2073,7 @@ def main(model_number=99, exp_data_number=83, run_test_foward_algorithm=False, r
 
     if run_model is True:
         run_through_dataset_fit_vector(datapath=datapath, savepath=model_save_path, training_savepath=training_savepath,
-                                       num_non_hazard_rate_param=2, fit_hazard_rate=False,
+                                       num_non_hazard_rate_param=0, fit_hazard_rate=True,
                                        cv=True,
                                        param=None)
 
@@ -2084,13 +2095,13 @@ def main(model_number=99, exp_data_number=83, run_test_foward_algorithm=False, r
         gradient_descent_w_cv(exp_data_path=datapath,
                               training_savepath=training_savepath,
                               # init_param_vals = np.array([10.0, 0.5, -3, 0.2, 0.2, 0.2]),
-                              init_param_vals=np.array([]),
-                              n_params=0, fit_hazard_rate=True,
-                              time_shift_list=np.arange(0, 1), num_epoch=500, batch_size=512,
+                              init_param_vals=np.array([10.0, 0.5]),
+                              n_params=2, fit_hazard_rate=True,
+                              time_shift_list=np.arange(0, 11), num_epoch=500, batch_size=512,
                               # fitted_params=["sigmoid_k", "sigmoid_midpoint", "stimulus_var",
                               #                "true_negative", "false_negative", "false_positive",
                               #                "hazard_rate"]
-                              fitted_params=["hazard_rate"]
+                              fitted_params=["sigmoid_k", "sigmoid_midpoint", "hazard_rate"]
                               )
 
 
@@ -2107,10 +2118,38 @@ def main(model_number=99, exp_data_number=83, run_test_foward_algorithm=False, r
         figsavepath = os.path.join(main_folder, "figures/transfer_function_model" + str(model_number))
         nmt_plot.plot_sigmoid_comparisions(training_savepath, plot_least_loss_sigmoid=True, figsavepath=figsavepath)
 
-    if run_plot_trained_hazard_rate is True:
-        figsavepath = os.path.join(main_folder, "figures/trained_hazard_rate" + str(model_number))
-        nmt_plot.plot_trained_hazard_rate(training_savepath, figsavepath=figsavepath, num_non_hazard_rate_param=3)
+    if run_plot_trained_sigmoid is True:
+        exp_data_number_list = [75, 78, 79, 80, 81, 83]
+        label_list = [1, 2, 3, 4, 5, 6]
+        figsavepath = os.path.join(main_folder, "figures", "sigmoid",
+                                   "mouse_sigmoid_comparison_model_" + str(model_number))
+        plt.style.use("~/Dropbox/notes/Projects/second_rotation_project/normative_model/ts.mplstyle")
+        fig, ax = plt.subplots(figsize=(4, 4))
+        sigmoid_func = functools.partial(apply_strategy, max_val=1.0, min_val=0.0, policy="sigmoid",
+                                         epsilon=0.1, lick_bias=0.5)
+        for exp_data_number, label in zip(exp_data_number_list, label_list):
+            training_savepath = os.path.join(main_folder, "hmm_data/training_result_0" + str(exp_data_number) + "_"
+                                             + str(model_number) + ".pkl")
+            with open(training_savepath, "rb") as handle:
+                training_result = pkl.load(handle)
+            fig, ax = nmt_plot.plot_trained_sigmoid(fig, ax, training_result, sigmoid_func,
+                                                    training_epoch=None, label=label)
 
+        ax.grid()
+        ax.legend(title="Mouse")
+        fig.savefig(figsavepath)
+
+        plt.show()
+
+
+
+    if run_plot_trained_hazard_rate is True:
+        figsavepath = os.path.join(main_folder, "figures/trained_hazard_rate_model_" + str(model_number) + "_mouse_"
+                                   + str(exp_data_number))
+        sigmoid_function = functools.partial(nonstandard_sigmoid, min_val=0, max_val=1.0, k=1, midpoint=0.5)
+        fig, ax = nmt_plot.plot_trained_hazard_rate(training_savepath, sigmoid_function, num_non_hazard_rate_param=0)
+        fig.set_size_inches(8, 4)
+        fig.savefig(figsavepath)
 
     if run_plot_time_shift_test is True:
         for trial_num in np.arange(0, 5):
@@ -2167,12 +2206,12 @@ def main(model_number=99, exp_data_number=83, run_test_foward_algorithm=False, r
 
 
 if __name__ == "__main__":
-    exp_data_number_list = [79, 80, 81, 83]  # [75, 78, 79, 80, 81, 83]
+    exp_data_number_list = [75, 78]  # [75, 78, 79, 80, 81, 83]
     for exp_data_number in exp_data_number_list:
-        main(model_number=65, exp_data_number=exp_data_number, run_test_on_data=False, run_gradient_descent=True,
+        main(model_number=68, exp_data_number=exp_data_number, run_test_on_data=False, run_gradient_descent=True,
              run_plot_training_loss=False, run_plot_sigmoid=False,
              run_plot_test_loss=False, run_model=False, run_plot_time_shift_test=False,
              run_plot_hazard_rate=False, run_plot_trained_hazard_rate=False, run_benchmark_model=False,
              run_plot_time_shift_training_result=False, run_plot_posterior=False, run_control_model=False,
-             run_plot_signal=False, run_plot_trained_posterior=False)
+             run_plot_signal=False, run_plot_trained_posterior=False, run_plot_trained_sigmoid=False)
 
