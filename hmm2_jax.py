@@ -1272,7 +1272,7 @@ def test_loss_function(datapath, plot_example=True, savepath=None):
 def get_hazard_rate(hazard_rate_type="subjective", datapath=None, plot_hazard_rate=False, figsavepath=None,
                     constant_val=0.001):
     """
-    The way I see it, there is 3 types of varying hazard rate.
+    The way I see it, there are 3 types of varying hazard rate.
     1. "normative": One specified by the experimental design;
     the actual distribution where the trial change-times are sampled from
     2. "experimental": The distribution in the trial change-times
@@ -1298,26 +1298,17 @@ def get_hazard_rate(hazard_rate_type="subjective", datapath=None, plot_hazard_ra
     max_signal_length = max(signal_length_list)
 
     # the following experimental hazard rate calculation sums to 1 (hist)
-    experimental_hazard_rate = onp.histogram(change_time, range=(0, max_signal_length), bins=max_signal_length)[0]
-    experimental_hazard_rate = experimental_hazard_rate / num_trial
-
-
-
-    def precise_cumsum(input_array):
-        from math import fsum
-        total = 0.0
-        for x in input_array:
-            total = fsum([x, total])
-            yield total
-
+    # experimental_hazard_rate = onp.histogram(change_time, range=(0, max_signal_length), bins=max_signal_length)[0]
+    # experimental_hazard_rate = experimental_hazard_rate / num_trial
 
     # experimental hazard rate as defined in Janssen and Shadlen (2005)
     hazard_rate_hist = onp.histogram(change_time, range=(0, max_signal_length), bins=max_signal_length)[0] \
                        / float(num_trial)
     hazard_rate_cumsum = onp.cumsum(hazard_rate_hist, dtype="float64")
-    hazard_rate_cumsum = onp.where(onp.array(hazard_rate_cumsum) > 1, 1, hazard_rate_cumsum)
-    hazard_rate_cumsum = list(precise_cumsum(hazard_rate_hist))
+    hazard_rate_cumsum = onp.where(onp.array(hazard_rate_cumsum) > 1, 1, hazard_rate_cumsum)  # cumsum precision
     experimental_hazard_rate = hazard_rate_hist / (1.0 - hazard_rate_cumsum)
+    experimental_hazard_rate = onp.where(~onp.isfinite(experimental_hazard_rate), 1,
+                                         experimental_hazard_rate)  # remove divide by zero Inf/NaN
 
 
     if hazard_rate_type == "subjective":
@@ -1327,7 +1318,8 @@ def get_hazard_rate(hazard_rate_type="subjective", datapath=None, plot_hazard_ra
         hit_index = onp.where(outcome == "Hit")[0]
         num_subjective_trial = len(hit_index)
         subjective_change_time = change_time[hit_index]
-        subjective_hazard_rate = onp.histogram(subjective_change_time, range=(0, max_signal_length), bins=max_signal_length)[0]
+        subjective_hazard_rate = onp.histogram(subjective_change_time, range=(0, max_signal_length),
+                                               bins=max_signal_length)[0]
 
         # convert from count to proportion (Divide by num_trial or num_subjective_trial?)
         subjective_hazard_rate = subjective_hazard_rate / num_subjective_trial
@@ -1364,7 +1356,8 @@ def get_hazard_rate(hazard_rate_type="subjective", datapath=None, plot_hazard_ra
     # Make the transition matrix based on hazard_rate_vec
     transition_matrix_list = list()
     for hazard_rate in hazard_rate_vec:
-        transition_matrix = np.array([[1 - hazard_rate, hazard_rate/5.0, hazard_rate/5.0, hazard_rate/5.0, hazard_rate/5.0, hazard_rate/5.0],
+        transition_matrix = np.array([[1 - hazard_rate, hazard_rate/5.0, hazard_rate/5.0, hazard_rate/5.0,
+                                       hazard_rate/5.0, hazard_rate/5.0],
                                   [0, 1, 0, 0, 0, 0],
                                   [0, 0, 1, 0, 0, 0],
                                   [0, 0, 0, 1, 0, 0],
