@@ -8,8 +8,8 @@ import pickle as pkl
 import pandas as pd
 import seaborn as sns
 
-stylesheet_path = "https://github.com/Timothysit/normative_change_detect/blob/master/ts.mplstyle"
-# stylesheet_path = "~/Dropbox/notes/Projects/second_rotation_project/normative_model/ts.mplstyle"
+# stylesheet_path = "https://github.com/Timothysit/normative_change_detect/blob/master/ts.mplstyle"
+stylesheet_path = "ts.mplstyle"
 # Plotting single model evaluation
 
 def plot_training_loss(training_savepath, figsavepath=None, cv=False, time_shift=False):

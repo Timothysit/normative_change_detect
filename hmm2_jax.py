@@ -35,7 +35,8 @@ from sklearn.preprocessing import LabelEncoder
 # Plotting functions
 import normative_plot as nmt_plot
 import functools  # to pass around sigmoid functions for plotting
-stylesheet_path = "https://github.com/Timothysit/normative_change_detect/blob/master/ts.mplstyle"
+# stylesheet_path = "https://github.com/Timothysit/normative_change_detect/blob/master/ts.mplstyle"
+stylesheet_path = "ts.mplstyle"
 
 def cal_p_x_given_z(x_k):
     z_mu = np.log(np.array([1.0, 1.25, 1.35, 1.50, 2.00, 4.00]))
