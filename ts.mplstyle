@@ -1,0 +1,44 @@
+# TS style for good looking plots
+
+## TODO: add grid by default
+## TODO: need to convert font to compute-modern sans serif
+
+## Labels
+xtick.labelsize    : 10
+ytick.labelsize    : 10
+
+
+## Font
+text.usetex        : True
+
+## Axes
+
+axes.spines.left   : False
+axes.spines.bottom : False
+axes.spines.top    : False
+axes.spines.right  : False
+
+## Axis tick marks
+
+xtick.major.size    : 0  # when 0, xtick becomes invisible  (only way I got it to work)
+ytick.major.size    : 0
+
+## Grids
+
+grid.color       :   93939c
+grid.linestyle   :   --
+grid.linewidth   :   0.8
+grid.alpha       :   0.2
+
+## Legend
+
+legend.frameon   : False
+
+## Figure size
+
+figure.figsize   : 8, 8  #  in inches
+
+## Figure format
+
+figure.dpi       : 300
+savefig.bbox     : tight  # options: standard | tight
