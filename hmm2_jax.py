@@ -35,6 +35,7 @@ from sklearn.preprocessing import LabelEncoder
 # Plotting functions
 import normative_plot as nmt_plot
 import functools  # to pass around sigmoid functions for plotting
+stylesheet_path = "https://github.com/Timothysit/normative_change_detect/blob/master/ts.mplstyle"
 
 def cal_p_x_given_z(x_k):
     z_mu = np.log(np.array([1.0, 1.25, 1.35, 1.50, 2.00, 4.00]))
@@ -1295,8 +1296,28 @@ def get_hazard_rate(hazard_rate_type="subjective", datapath=None, plot_hazard_ra
 
     max_signal_length = max(signal_length_list)
 
+    # the following experimental hazard rate calculation sums to 1 (hist)
     experimental_hazard_rate = onp.histogram(change_time, range=(0, max_signal_length), bins=max_signal_length)[0]
     experimental_hazard_rate = experimental_hazard_rate / num_trial
+
+
+
+    def precise_cumsum(input_array):
+        from math import fsum
+        total = 0.0
+        for x in input_array:
+            total = fsum([x, total])
+            yield total
+
+
+    # experimental hazard rate as defined in Janssen and Shadlen (2005)
+    hazard_rate_hist = onp.histogram(change_time, range=(0, max_signal_length), bins=max_signal_length)[0] \
+                       / float(num_trial)
+    hazard_rate_cumsum = onp.cumsum(hazard_rate_hist, dtype="float64")
+    hazard_rate_cumsum = onp.where(onp.array(hazard_rate_cumsum) > 1, 1, hazard_rate_cumsum)
+    hazard_rate_cumsum = list(precise_cumsum(hazard_rate_hist))
+    experimental_hazard_rate = hazard_rate_hist / (1.0 - hazard_rate_cumsum)
+
 
     if hazard_rate_type == "subjective":
         # get change times
@@ -1654,7 +1675,7 @@ def gradient_descent_w_cv(exp_data_path, training_savepath, init_param_vals=np.a
     # hazard_rate, _ = get_hazard_rate(hazard_rate_type="subjective", datapath=exp_data_path)
 
     # fit constant hazard rate
-    hazard_rate = 0.01
+    hazard_rate = np.array([0.01])
 
     # add a bit of noise to it (so there are no identical values)
     # key = random.PRNGKey(777)
@@ -2123,7 +2144,7 @@ def main(model_number=99, exp_data_number=83, run_test_foward_algorithm=False, r
         label_list = [1, 2, 3, 4, 5, 6]
         figsavepath = os.path.join(main_folder, "figures", "sigmoid",
                                    "mouse_sigmoid_comparison_model_" + str(model_number))
-        plt.style.use("~/Dropbox/notes/Projects/second_rotation_project/normative_model/ts.mplstyle")
+        plt.style.use(stylesheet_path)
         fig, ax = plt.subplots(figsize=(4, 4))
         sigmoid_func = functools.partial(apply_strategy, max_val=1.0, min_val=0.0, policy="sigmoid",
                                          epsilon=0.1, lick_bias=0.5)
@@ -2208,10 +2229,10 @@ def main(model_number=99, exp_data_number=83, run_test_foward_algorithm=False, r
 if __name__ == "__main__":
     exp_data_number_list = [75, 78]  # [75, 78, 79, 80, 81, 83]
     for exp_data_number in exp_data_number_list:
-        main(model_number=68, exp_data_number=exp_data_number, run_test_on_data=False, run_gradient_descent=True,
+        main(model_number=68, exp_data_number=exp_data_number, run_test_on_data=False, run_gradient_descent=False,
              run_plot_training_loss=False, run_plot_sigmoid=False,
              run_plot_test_loss=False, run_model=False, run_plot_time_shift_test=False,
-             run_plot_hazard_rate=False, run_plot_trained_hazard_rate=False, run_benchmark_model=False,
+             run_plot_hazard_rate=True, run_plot_trained_hazard_rate=False, run_benchmark_model=False,
              run_plot_time_shift_training_result=False, run_plot_posterior=False, run_control_model=False,
              run_plot_signal=False, run_plot_trained_posterior=False, run_plot_trained_sigmoid=False)
 

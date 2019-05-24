@@ -8,6 +8,8 @@ import pickle as pkl
 import pandas as pd
 import seaborn as sns
 
+stylesheet_path = "https://github.com/Timothysit/normative_change_detect/blob/master/ts.mplstyle"
+# stylesheet_path = "~/Dropbox/notes/Projects/second_rotation_project/normative_model/ts.mplstyle"
 # Plotting single model evaluation
 
 def plot_training_loss(training_savepath, figsavepath=None, cv=False, time_shift=False):
@@ -133,6 +135,35 @@ def plot_sigmoid_comparisions(training_savepath, plot_least_loss_sigmoid=False, 
 
     plt.show()
 
+def plot_trained_sigmoid(fig, ax, training_result, sigmoid_func, training_epoch=None, label=None):
+    """
+    Plots the final trained sigmoid for a mouse.
+    Accepts fig, ax and returns fig ax to allow stacking multiple mice on top.
+    :param training_result: dictioary containing validation loss and trained parmeter for epochs
+    :param sigmoid_func: sigmoid function to convert p(change) to p(lick)
+    :param training_epoch: which epoch to use the parameters, if None, selects the one with lowest cost
+    :param label: label to put on line (usually mouse number)
+    :return:
+    """
+
+    if training_epoch is None:
+        training_epoch = np.where(training_result["val_loss"] == min(training_result["val_loss"]))[0][0]
+
+    p_change = np.linspace(0, 1, 1000)
+    param_vals = training_result["param_val"][training_epoch]
+    p_lick = sigmoid_func(p_change, param_vals[0], param_vals[1])
+
+    ax.plot(p_change, p_lick, label=label)
+    ax.set_xlabel(r"$p(\mathrm{change})$")
+    ax.set_ylabel(r"$p(\mathrm{lick})$")
+
+    return fig, ax
+
+def plot_sigmoid_params(training_result_list, sigmoid_func, training_epoch=None, label=None):
+    fig, ax = plt.subpolts(figsize=(4, 4))
+
+    return fig, ax
+
 
 def plot_trained_hazard_rate(training_savepath, sigmoid_function=None, num_non_hazard_rate_param=2):
     """
@@ -150,7 +181,7 @@ def plot_trained_hazard_rate(training_savepath, sigmoid_function=None, num_non_h
     hazard_rate = epoch_param[num_non_hazard_rate_param:]
     hazard_rate = hazard_rate[:-10]  # remove the last few values, which are usually not runned through gradient descent
 
-    plt.style.use("~/Dropbox/notes/Projects/second_rotation_project/normative_model/ts.mplstyle")
+    plt.style.use(stylesheet_path)
     fig, ax = plt.subplots(1, 1, figsize=(8, 6))
     if sigmoid_function is None:
         ax.plot(hazard_rate)
@@ -811,7 +842,7 @@ def ts_boxplot(df):
     :param df: pivoted dataframe, where each row is a factor, and each column is an individual
     :return:
     """
-    plt.style.use("~/Dropbox/notes/Projects/second_rotation_project/normative_model/ts.mplstyle")
+    plt.style.use(stylesheet_path)
     fig, ax = plt.subplots(figsize=(8, 6))
     ax.boxplot(x=df)
     ax.grid()
