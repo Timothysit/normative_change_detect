@@ -860,6 +860,9 @@ def run_through_dataset_fit_vector(datapath, savepath, training_savepath, param=
     :return:
     """
 
+    global time_shift
+    time_shift = 6
+
     if param is None:
         # if no parameters specified, then load the training result and get the last param
         with open(training_savepath, "rb") as handle:
@@ -868,9 +871,14 @@ def run_through_dataset_fit_vector(datapath, savepath, training_savepath, param=
     if epoch_index is None and cv is False:
         min_loss_epoch_index = onp.where(training_result["loss"] == min(training_result["loss"]))[0][0]
         epoch_index = min_loss_epoch_index
-    elif epoch_index is None and cv is True:
+    elif epoch_index is None and cv is True and time_shift is None:
         min_val_loss_epoch_index = onp.where(training_result["val_loss"] == min(training_result["val_loss"]))[0][0]
         epoch_index = min_val_loss_epoch_index
+    elif epoch_index is None and cv is True and time_shift is not None:
+        # get minimum validation loss for a particular time shift
+        time_shift_index = onp.where(onp.array(training_result["time_shift"]) == time_shift)[0]
+        min_val_loss = min(training_result["mean_val_loss"][time_shift_index])
+        epoch_index = onp.where(training_result["mean_val_loss"] == min_val_loss)[0][0]
 
     # normally -1 (last training epoch)
     if cv is False:
@@ -879,12 +887,9 @@ def run_through_dataset_fit_vector(datapath, savepath, training_savepath, param=
     else:
         param = training_result["param_val"][epoch_index]
         print("Parameter training loss: ", str(training_result["val_loss"][epoch_index]))
+        print("Mean validation loss:", str(training_result["mean_val_loss"][epoch_index]))
 
     # note that parameters do not need to be pre-processed
-
-    global time_shift
-    time_shift = 0
-
     with open(datapath, "rb") as handle:
         exp_data = pkl.load(handle)
 
@@ -1811,7 +1816,7 @@ def gradient_descent_w_cv(exp_data_path, training_savepath, init_param_vals=np.a
 
             # get test loss at the end of training
             if epoch == num_epoch:
-                # TODO: used the best params...
+                # TODO: use the best params... (instead of the last)
                 test_loss = loss_function_batch(params, (signal_matrix_test, lick_matrix_test))
                 print("Test loss: " + str(test_loss))
                 test_loss_list.append(test_loss)
@@ -1897,12 +1902,12 @@ def predict_lick_w_hazard_rate(param_vals, signal):
 
     # posterior = forward_inference_w_tricks(signal.flatten())
     global transition_matrix_list
-    # transition_matrix_list = make_transition_matrix(hazard_rate_vec=param_vals[num_non_hazard_rate_params:])
+    transition_matrix_list = make_transition_matrix(hazard_rate_vec=param_vals[num_non_hazard_rate_params:])
     # ^ note this works due to zero-indexing. (if num=2, then we start from index 2, which is the 3rd param)
 
     # constant tunable hazard rate
-    hazard_rate_param = np.repeat(param_vals[num_non_hazard_rate_params:], max_signal_length)
-    transition_matrix_list = make_transition_matrix(hazard_rate_vec=hazard_rate_param)
+    # hazard_rate_param = np.repeat(param_vals[num_non_hazard_rate_params:], max_signal_length)
+    # transition_matrix_list = make_transition_matrix(hazard_rate_vec=hazard_rate_param)
 
     # add noise to the signal
     # key = random.PRNGKey(777)
@@ -2017,27 +2022,6 @@ def benchmark_model(datapath, training_savepath, figsavepath=None, alpha=1):
     plt.show()
 
 
-def plot_time_shift_training_result(training_savepath, figsavepath=None, time_shift_list = np.arange(0, 22, 2),
-                                    num_step=20, num_epoch_per_step=10):
-    with open(training_savepath, "rb") as handle:
-        training_result = pkl.load(handle)
-
-    loss = training_result["loss"]
-    final_losses = loss[num_step-1::num_step] # 9th, 19th, etc... (0 indexing)
-
-    fig, ax = plt.subplots(1, 1, figsize=(8, 6))
-    ax.plot(time_shift_list, final_losses)
-    ax.scatter(time_shift_list, final_losses)
-    ax.set_ylabel("Loss at %s-th iteration" % str(num_step * num_epoch_per_step))
-    ax.set_xlabel("Time shift (frames)")
-
-    ax.spines["top"].set_visible(False)
-    ax.spines["right"].set_visible(False)
-
-    if figsavepath is not None:
-        plt.savefig(figsavepath, dpi=300)
-
-    plt.show()
 
 
 
@@ -2054,7 +2038,7 @@ def gradient_clipping(gradients, type="L2_norm"):
 def main(model_number=99, exp_data_number=83, run_test_foward_algorithm=False, run_test_on_data=False, run_gradient_descent=False, run_plot_training_loss=False, run_plot_sigmoid=False, run_plot_test_loss=False,
          run_model=False, run_plot_time_shift_test=False, run_plot_hazard_rate=False, run_plot_trained_hazard_rate=False,
          run_benchmark_model=False, run_plot_time_shift_training_result=False, run_plot_posterior=False, run_control_model=False,
-         run_plot_signal=False, run_plot_trained_posterior=False, run_plot_trained_sigmoid=False):
+         run_plot_signal=False, run_plot_trained_posterior=False, run_plot_trained_sigmoid=False, run_plot_time_shift_cost=False):
     home = expanduser("~")
     print("Running model: ", str(model_number))
     print("Using mouse: ", str(exp_data_number))
@@ -2088,9 +2072,8 @@ def main(model_number=99, exp_data_number=83, run_test_foward_algorithm=False, r
 
     if run_model is True:
         run_through_dataset_fit_vector(datapath=datapath, savepath=model_save_path, training_savepath=training_savepath,
-                                       num_non_hazard_rate_param=0, fit_hazard_rate=True,
-                                       cv=True,
-                                       param=None)
+                                       num_non_hazard_rate_param=2, fit_hazard_rate=True,
+                                       cv=True, param=None)
 
     if run_control_model is True:
         control_model(datapath=datapath, savepath=model_save_path, training_savepath=training_savepath,
@@ -2126,8 +2109,27 @@ def main(model_number=99, exp_data_number=83, run_test_foward_algorithm=False, r
         test_loss_function(datapath, plot_example=False, savepath=figsavepath)
 
     if run_plot_training_loss is True:
-        figsavepath = os.path.join(main_folder, "figures/training_result_model" + str(model_number))
-        nmt_plot.plot_training_loss(training_savepath, figsavepath=figsavepath, cv=True, time_shift=False)
+        figsavepath = os.path.join(main_folder, "figures/training_result_model" + str(model_number) + "_mouse_" +
+                                   str(exp_data_number))
+        nmt_plot.plot_training_loss(training_savepath, figsavepath=figsavepath, cv=True, time_shift=True)
+
+    if run_plot_time_shift_cost is True:
+        figsavepath = os.path.join(main_folder, "figures/time_shift_min_loss_model" + str(model_number))
+        exp_data_number_list = [75, 78, 79, 80, 81, 83]
+        label_list = [1, 2, 3, 4, 5, 6]
+        plt.style.use(stylesheet_path)
+        fig, ax = plt.subplots(figsize=(4, 4))
+        for exp_data_number, label in zip(exp_data_number_list, label_list):
+            training_savepath = os.path.join(main_folder, "hmm_data/training_result_0" + str(exp_data_number) + "_"
+                                             + str(model_number) + ".pkl")
+            with open(training_savepath, "rb") as handle:
+                training_result = pkl.load(handle)
+
+            fig, ax = nmt_plot.plot_time_shift_cost(fig, ax, training_result, label=label)
+
+        ax.grid()
+        ax.legend(title="Mouse")
+        fig.savefig(figsavepath)
 
     if run_plot_sigmoid is True:
         figsavepath = os.path.join(main_folder, "figures/transfer_function_model" + str(model_number))
@@ -2221,12 +2223,12 @@ def main(model_number=99, exp_data_number=83, run_test_foward_algorithm=False, r
 
 
 if __name__ == "__main__":
-    exp_data_number_list = [75, 78]  # [75, 78, 79, 80, 81, 83]
+    exp_data_number_list = [75, 78, 79, 80, 81, 83]  # [75, 78, 79, 80, 81, 83]
     for exp_data_number in exp_data_number_list:
-        main(model_number=68, exp_data_number=exp_data_number, run_test_on_data=False, run_gradient_descent=False,
-             run_plot_training_loss=False, run_plot_sigmoid=False,
+        main(model_number=69, exp_data_number=exp_data_number, run_test_on_data=False, run_gradient_descent=True,
+             run_plot_training_loss=False, run_plot_sigmoid=False, run_plot_time_shift_cost=False,
              run_plot_test_loss=False, run_model=False, run_plot_time_shift_test=False,
-             run_plot_hazard_rate=True, run_plot_trained_hazard_rate=False, run_benchmark_model=False,
+             run_plot_hazard_rate=False, run_plot_trained_hazard_rate=False, run_benchmark_model=False,
              run_plot_time_shift_training_result=False, run_plot_posterior=False, run_control_model=False,
              run_plot_signal=False, run_plot_trained_posterior=False, run_plot_trained_sigmoid=False)
 
