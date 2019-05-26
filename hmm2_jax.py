@@ -646,17 +646,22 @@ def predict_lick(param_vals, signal):
     # multiply standard normal by constant: aX + b = N(au + b, a^2\sigma^2)
     posterior = forward_inference_custom_transition_matrix(signal)
 
+    # prevent overflow/underflow
+    small_value = 1e-6
+    posterior = np.where(posterior >= 1.0, 1-small_value, posterior)
+    posterior = np.where(posterior <= 0.0, small_value, posterior)
+
     # posterior = forward_inference_custom_transition_matrix(signal.flatten())
 
     # p_lick = apply_cost_benefit(change_posterior=posterior, true_positive=1.0, true_negative=0.0,
     #                             false_negative=0.0, false_positive=0.0) # param_vals[1]
-    # p_lick = apply_strategy(p_lick, k=param_vals[0], midpoint=param_vals[1])
+    p_lick = apply_strategy(posterior, k=param_vals[0], midpoint=param_vals[1])
 
-    p_lick = apply_cost_benefit(change_posterior=posterior, true_positive=1.0, true_negative=0.0,
-                                false_negative=0.0, false_positive=0.0) # param_vals[1]
-    p_lick = apply_strategy(p_lick, k=nonstandard_sigmoid(param_vals[0], min_val=0, max_val=20),
-                            midpoint=nonstandard_sigmoid(param_vals[1], min_val=-10, max_val=10),
-                            max_val=1-1e-5, min_val=1e-5)
+    # p_lick = apply_cost_benefit(change_posterior=posterior, true_positive=1.0, true_negative=0.0,
+    #                             false_negative=0.0, false_positive=0.0) # param_vals[1]
+    # p_lick = apply_strategy(p_lick, k=nonstandard_sigmoid(param_vals[0], min_val=0, max_val=20),
+    #                         midpoint=nonstandard_sigmoid(param_vals[1], min_val=-10, max_val=10),
+    #                         max_val=1-1e-5, min_val=1e-5)
 
     # Add time shift
 
@@ -1674,7 +1679,7 @@ def gradient_descent_w_cv(exp_data_path, training_savepath, init_param_vals=np.a
     # hazard_rate, _ = get_hazard_rate(hazard_rate_type="subjective", datapath=exp_data_path)
 
     # fit constant hazard rate
-    hazard_rate = np.array([0.01])
+    # hazard_rate = np.array([0.01])
 
     # add a bit of noise to it (so there are no identical values)
     # key = random.PRNGKey(777)
@@ -1698,7 +1703,7 @@ def gradient_descent_w_cv(exp_data_path, training_savepath, init_param_vals=np.a
     else:
         batched_predict_lick = vmap(predict_lick, in_axes=(None, 0))
         global transition_matrix_list
-        _, transition_matrix_list = get_hazard_rate(hazard_rate_type="subjective", datapath=exp_data_path)
+        _, transition_matrix_list = get_hazard_rate(hazard_rate_type="experimental", datapath=exp_data_path)
 
     # for cases where the cumulative lick is used
     global batched_cumulative_lick
@@ -2094,12 +2099,12 @@ def main(model_number=99, exp_data_number=83, run_test_foward_algorithm=False, r
                               training_savepath=training_savepath,
                               # init_param_vals = np.array([10.0, 0.5, -3, 0.2, 0.2, 0.2]),
                               init_param_vals=np.array([10.0, 0.5]),
-                              n_params=2, fit_hazard_rate=True,
+                              n_params=2, fit_hazard_rate=False,
                               time_shift_list=np.arange(0, 11), num_epoch=500, batch_size=512,
                               # fitted_params=["sigmoid_k", "sigmoid_midpoint", "stimulus_var",
                               #                "true_negative", "false_negative", "false_positive",
                               #                "hazard_rate"]
-                              fitted_params=["sigmoid_k", "sigmoid_midpoint", "hazard_rate"]
+                              fitted_params=["sigmoid_k", "sigmoid_midpoint"]
                               )
 
 
