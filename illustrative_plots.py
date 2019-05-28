@@ -1,5 +1,6 @@
 import numpy as np
 import matplotlib.pyplot as plt
+import seaborn as sns
 import os
 # stylesheet_path = "https://github.com/Timothysit/normative_change_detect/blob/master/ts.mplstyle"
 stylesheet_path = "ts.mplstyle"
@@ -123,18 +124,31 @@ def normal_dist(mean=0, var=1, vert_loc=None):
 
     return fig, ax
 
-def change_time_dist():
+def change_time_dist(early_block_time=[3, 8], late_block_time=[10.5, 15.5], early_block_prop=0.9,
+                     late_block_prop=0.1, total_sample_size=10000, dist_type="uniform"):
     """
     Plot distribution of change times (idealised)
     :return:
     """
+    plt.style.use(stylesheet_path)
     fig, ax = plt.subplots()
 
-    time = np.linspace(0, 300, 1000)
+    if dist_type == "uniform":
+        early_change_times = np.random.uniform(low=early_block_time[0], high=early_block_time[1],
+                                               size=int(total_sample_size * early_block_prop))
+        late_change_times = np.random.uniform(low=late_block_time[0], high=late_block_time[1],
+                                              size=int(total_sample_size * late_block_prop))
+    elif dist_type == "exponential":
+        pass
 
+
+
+    sns.distplot(np.concatenate([early_change_times, late_change_times]), kde=True, ax=ax)
+
+    ax.set_ylabel("Kernel density estimate")
+    ax.set_xlabel("Change time (seconds)")
 
     return fig, ax
-
 
 def main():
     fig_folder = "/home/timothysit/Dropbox/notes/Projects/second_rotation_project/normative_model/figures/illustrations"
@@ -188,6 +202,20 @@ def main():
     fig, ax = normal_dist(mean=0, var=1, vert_loc=1.0)
     fig.set_size_inches(4, 4)
     fig.savefig(figsavepath, dpi=600)  # format="svg"
+
+    # Example signal
+    figsavepath = os.path.join(fig_folder, "change_signal")
+    fig, ax = example_signal(tau=50, signal_length=300, signal_var=0.1, baseline=1.0, change_amplitude=1.25)
+    fig.set_size_inches(8, 4)
+    fig.savefig(figsavepath, dpi=300)
+
+    # Change time distribution
+    figsavepath = os.path.join(fig_folder, "change_time_dist")
+    fig, ax = change_time_dist(early_block_time=[3, 8], late_block_time=[10.5, 15.5], early_block_prop=0.9,
+                     late_block_prop=0.1, total_sample_size=10000)
+    fig.set_size_inches(8, 4)
+    fig.savefig(figsavepath, dpi=300)
+
 
 
 if __name__ == "__main__":
