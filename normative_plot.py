@@ -41,7 +41,7 @@ def plot_training_loss(training_savepath, figsavepath=None, cv=False, time_shift
     parameters = training_result["param_val"]
 
     if cv is False:
-        fig, ax = plt.subplots(1, 1, figsize=(8, 6))
+        fig, ax = plt.subplots(1, 1, figsize=(12, 6))
         ax.plot(np.arange(1, len(loss)+1) * epoch_per_step, loss)
         ax.set_ylabel("Loss")
         ax.set_xlabel("Epochs")
@@ -64,8 +64,8 @@ def plot_training_loss(training_savepath, figsavepath=None, cv=False, time_shift
         fig, ax = plt.subplots(2, 5, sharey=True, sharex=True)
         ax = ax.flatten()
         time_shift_list = training_result["time_shift"]
-        for n, time_shift in enumerate(onp.unique(time_shift_list)):
-            time_shift_index = onp.where(time_shift_list == time_shift)[0]
+        for n, time_shift in enumerate(np.unique(time_shift_list)[1:]):  # quick hack: remove the first one for (0, 11)
+            time_shift_index = np.where(time_shift_list == time_shift)[0]
             ax[n].plot(train_loss[time_shift_index] / train_set_size, label="Training loss")
             ax[n].plot(val_loss[time_shift_index] / val_set_size, label="Validation loss")
             ax[n].set_title("Time shift:" + str(time_shift))
@@ -159,18 +159,53 @@ def plot_trained_sigmoid(fig, ax, training_result, sigmoid_func, training_epoch=
 
     return fig, ax
 
+
+def plot_trained_sigmoid_param(fig, ax, training_result, param_conversion_func=None, training_epoch=None, label=None):
+    """
+    Plots the final trained sigmoid for a mouse.
+    Accepts fig, ax and returns fig ax to allow stacking multiple mice on top.
+    :param training_result: dictioary containing validation loss and trained parmeter for epochs
+    :param param_conversion_func: function from parameter value to the actual value use to obtain the sigmoid
+    if None, then assumes that there are no pre-conversion process from the input parameters to gradient descent and
+    the actual parameter values used to create the sigmoid.
+    :param training_epoch: which epoch to use the parameters, if None, selects the one with lowest cost
+    :param label: label to put on line (usually mouse number)
+    :return:
+    """
+
+    if training_epoch is None:
+        training_epoch = np.where(training_result["val_loss"] == min(training_result["val_loss"]))[0][0]
+
+    param_vals = training_result["param_val"][training_epoch]
+    if param_conversion_func is None:
+        actual_param_vals = param_vals
+    else:
+        actual_param_vals = param_conversion_func(param_vals)
+
+    # ax.scatter(1 / actual_param_vals[0], actual_param_vals[1], label=label, s=30)
+    # ax.set_xlabel(r"$1 / \beta$ (Exploration)")   # inverse of the slope of the sigmoid
+
+    ax.scatter(actual_param_vals[0], actual_param_vals[1], label=label, s=30)
+    ax.set_xlabel(r"$\beta$ (Exploitation)")   # slope of the sigmoid (how "strict" your policy is)
+    ax.set_ylabel(r"$\alpha$ (False alarm negative value)")  # midpoint of the sigmoid
+
+    return fig, ax
+
 def plot_sigmoid_params(training_result_list, sigmoid_func, training_epoch=None, label=None):
     fig, ax = plt.subpolts(figsize=(4, 4))
 
     return fig, ax
 
 
-def plot_trained_hazard_rate(training_savepath, sigmoid_function=None, num_non_hazard_rate_param=2):
+def plot_trained_hazard_rate(training_savepath, sigmoid_function=None, num_non_hazard_rate_param=2,
+                             constant_hazard_rate=False, max_signal_length=None):
     """
     Plot fitted hazard rate.
     :param training_savepath:
     :param sigmoid_function: sigmoid function used to convert between parameter and actual hazard rate
     :param num_non_hazard_rate_param:
+    :param constant_hazard_rate: whether the hazard rate is constant, in which case the hazard rate is just a scalar
+    :param max_signal_length: if hazard rate is constant, then it will be repeated for max_signal_length times
     :return:
     """
     with open(training_savepath, "rb") as handle:
@@ -181,6 +216,10 @@ def plot_trained_hazard_rate(training_savepath, sigmoid_function=None, num_non_h
     hazard_rate = epoch_param[num_non_hazard_rate_param:]
     hazard_rate = hazard_rate[:-10]  # remove the last few values, which are usually not runned through gradient descent
 
+    if constant_hazard_rate is True:
+        hazard_rate = epoch_param[num_non_hazard_rate_param:][0]
+        hazard_rate = np.repeat(hazard_rate, max_signal_length)
+
     plt.style.use(stylesheet_path)
     fig, ax = plt.subplots(1, 1, figsize=(8, 6))
     if sigmoid_function is None:
@@ -190,6 +229,8 @@ def plot_trained_hazard_rate(training_savepath, sigmoid_function=None, num_non_h
     # ax.plot(softmax(hazard_rate))
     ax.set_xlabel("Time (frames)")
     ax.set_ylabel("P(change)")
+
+    ax.set_ylim([-0.05, 1.05])
 
     ax.spines["right"].set_visible(False)
     ax.spines["top"].set_visible(False)
@@ -357,6 +398,25 @@ def plot_trained_posterior(datapath, training_savepath, num_examples=10, random_
         plt.savefig(figsavepath, dpi=300)
 
     plt.show()
+
+
+def plot_time_shift_cost(fig, ax, training_result, label):
+    """
+    Plot the lowest validation lost for each time shift
+    :return:
+    """
+    time_shift_list = np.unique(training_result["time_shift"])
+    min_loss_list = list()
+
+    for time_shift in time_shift_list:
+        time_shift_index = np.where(np.array(training_result["time_shift"]) == time_shift)[0]
+        min_loss_list.append(min(training_result["mean_val_loss"][time_shift_index]))
+
+    ax.plot(time_shift_list, min_loss_list, label=label)
+    ax.set_xlabel("Time shift")
+    ax.set_ylabel("Minimum mean validation loss (per trial)")
+
+    return fig, ax
 
 
 # Plot single model comparison with fitted mouse data
@@ -740,6 +800,69 @@ def compare_model_and_mouse_dist(mouse_df_path, model_df_path, plot_type="FA", c
     if showfig is True:
         plt.show()
 
+
+def compare_model_and_mouse_density_only(fig, ax, mouse_df_path, model_df_path, plot_type="FA", change_magnitude=None, savepath=None,
+                                 strip_dot_size=2, strip_jitter=1, strip_dot_alpha=1, model_sub_sample=1000,
+                                 show_model_sub_sample=None, include_rug_plot=True):
+
+    mouse_df = pd.read_pickle(mouse_df_path)
+    model_df = pd.read_pickle(model_df_path)
+    rugplot_alpha = 0.01
+    rugplot_linewidth = 0.75
+
+    if plot_type == "FA":
+        mouse_hit_index = np.where((mouse_df["peri_stimulus_rt"]) >= 0 & (mouse_df["change"] > 0))[0]
+        mouse_df = mouse_df.loc[~mouse_df.index.isin(mouse_hit_index)]
+        model_hit_index = np.where((model_df["peri_stimulus_rt"]) >= 0 & (model_df["change"] > 0))[0]
+        model_df = model_df.loc[~model_df.index.isin(model_hit_index)]
+    elif plot_type == "Hit":
+        mouse_hit_index = np.where((mouse_df["peri_stimulus_rt"]) >= 0 & (np.exp(mouse_df["change"]) == change_magnitude))[0]
+        mouse_df = mouse_df.loc[mouse_df.index.isin(mouse_hit_index)]
+        model_hit_index = np.where((model_df["peri_stimulus_rt"]) >= 0 & (np.exp(model_df["change"]) == change_magnitude))[0]
+        model_df = model_df.loc[model_df.index.isin(model_hit_index)]
+
+    if model_sub_sample is not None:
+        model_df = model_df.sample(model_sub_sample)
+
+    if plot_type == "FA":
+        sns.kdeplot(model_df["absolute_decision_time"], shade=False, linewidth=3, vertical=False, alpha=0.5, ax=ax,
+                    label="Model")
+        sns.kdeplot(mouse_df["absolute_decision_time"], shade=False, linewidth=3, vertical=False, alpha=0.5, ax=ax,
+                    label="Mouse")
+
+        if include_rug_plot is True:
+            if show_model_sub_sample is not None:
+                model_df = model_df.sample(show_model_sub_sample)
+
+            upper_rugplot(model_df["absolute_decision_time"], alpha=rugplot_alpha, lw=rugplot_linewidth)
+            sns.rugplot(mouse_df["absolute_decision_time"], axis="x", alpha=rugplot_alpha, lw=rugplot_linewidth,
+                        color="orange")
+
+            ax.legend(frameon=False)
+
+    elif plot_type == "Hit":
+        # first row: KDE of model and mouse
+        sns.kdeplot(model_df["peri_stimulus_rt"], shade=False, linewidth=3, vertical=False, alpha=0.5, ax=ax,
+                    label="Model")
+        sns.kdeplot(mouse_df["peri_stimulus_rt"], shade=False, linewidth=3, vertical=False, alpha=0.5, ax=ax,
+                    label="Mouse")
+        ax.legend(frameon=False)
+
+        if include_rug_plot is True:
+            if show_model_sub_sample is not None:
+                model_df = model_df.sample(show_model_sub_sample)
+
+            upper_rugplot(model_df["peri_stimulus_rt"], alpha=rugplot_alpha, lw=rugplot_linewidth)
+            sns.rugplot(mouse_df["peri_stimulus_rt"], axis="x", alpha=rugplot_alpha, lw=rugplot_linewidth,
+                        color="orange")
+
+    ax.grid()
+
+    ax.set_ylabel("Kernel density estimate")
+    ax.set_xlabel("Time (frames)")
+
+    return fig, ax
+
 # Plotting evaluation across models
 
 
@@ -859,6 +982,25 @@ def ts_boxplot(df):
     return fig, ax
 
 
+def plot_time_shift_training_result(fig, ax, training_savepath, time_shift_list=np.arange(0, 22, 2),
+                                    num_step=20, num_epoch_per_step=10):
+    with open(training_savepath, "rb") as handle:
+        training_result = pkl.load(handle)
+
+    loss = training_result["loss"]
+    final_losses = loss[num_step-1::num_step] # 9th, 19th, etc... (0 indexing)
+
+    ax.plot(time_shift_list, final_losses)
+    ax.scatter(time_shift_list, final_losses)
+    ax.set_ylabel("Loss at %s-th iteration" % str(num_step * num_epoch_per_step))
+    ax.set_xlabel("Time shift (frames)")
+
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+
+    return fig, ax
+
+
 # Plot experimental data / simple diagnostics
 
 def plot_signals(datapath):
@@ -889,6 +1031,22 @@ def plot_signals(datapath):
     print("Signal mean before change time:", np.mean(signal_sample[:tau[random_index]]))
     print("Signal mean after change time:", np.mean(signal_sample[tau[random_index]:]))
 
+def plot_change_times(exp_data, xlim=None):
+    """
+    Plots the distribution of change times in the data.
+    :param exp_data:
+    :return:
+    """
+    plt.style.use(stylesheet_path)
+    change_times = exp_data["change"].flatten()
+    fig, ax = plt.subplots()
+    sns.distplot(change_times, kde=False, ax=ax, norm_hist=True)
+    ax.grid()
+    ax.set_ylabel("Proportion")
+    ax.set_xlabel("Change time (seconds)")
+    ax.set_xlim(xlim)
+
+    return fig, ax
 
 def plot_posterior(datapath, model_training_data_path=None, figsavepath=None):
 
@@ -1022,3 +1180,16 @@ def _nonstandard_sigmoid(input, min_val=0.0, max_val=1.0, k=1, midpoint=0.5):
                       + min_val)
 
     return output
+
+
+def upper_rugplot(data, height=.05, ax=None, **kwargs):
+    # from:
+    # https://stackoverflow.com/questions/55066869/matplotlib-seaborn-how-to-plot-a-rugplot-on-the-top-edge-of-x-axis
+    from matplotlib.collections import LineCollection
+    ax = ax or plt.gca()
+    # kwargs.setdefault("linewidth", 1)
+    segs = np.stack((np.c_[data, data],
+                     np.c_[np.ones_like(data), np.ones_like(data)-height]),
+                    axis=-1)
+    lc = LineCollection(segs, transform=ax.get_xaxis_transform(), **kwargs)
+    ax.add_collection(lc)
