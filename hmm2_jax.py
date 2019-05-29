@@ -63,7 +63,8 @@ def forward_inference(x):
 
     hazard_rate = 0.0001
 
-    transition_matrix = np.array([[1 - hazard_rate, hazard_rate/5.0, hazard_rate/5.0, hazard_rate/5.0, hazard_rate/5.0, hazard_rate/5.0],
+    transition_matrix = np.array([[1 - hazard_rate, hazard_rate/5.0, hazard_rate/5.0, hazard_rate/5.0, hazard_rate/5.0,
+                                   hazard_rate/5.0],
                                   [0, 1, 0, 0, 0, 0],
                                   [0, 0, 1, 0, 0, 0],
                                   [0, 0, 0, 1, 0, 0],
@@ -869,7 +870,7 @@ def run_through_dataset_fit_vector(datapath, savepath, training_savepath, param=
     """
 
     global time_shift
-    time_shift = 7
+    time_shift = 6
 
     if param is None:
         # if no parameters specified, then load the training result and get the last param
@@ -891,7 +892,7 @@ def run_through_dataset_fit_vector(datapath, savepath, training_savepath, param=
     # normally -1 (last training epoch)
     if cv is False:
         param = training_result["param_val"][epoch_index]
-        print("Parameter training loss: ",  str(training_result["loss"][epoch_index])) # just to double check
+        print("Parameter training loss: ",  str(training_result["loss"][epoch_index]))  # just to double check
     else:
         param = training_result["param_val"][epoch_index]
         print("Parameter training loss: ", str(training_result["val_loss"][epoch_index]))
@@ -940,7 +941,9 @@ def run_through_dataset_fit_vector(datapath, savepath, training_savepath, param=
         max_signal_length = np.shape(lick_matrix)[1]
     else:
         global transition_matrix_list
-        _, transition_matrix_list = get_hazard_rate(hazard_rate_type="constant", constant_val=0.0001, datapath=datapath)
+        # _, transition_matrix_list = get_hazard_rate(hazard_rate_type="constant", constant_val=0.0001,
+        # datapath=datapath)
+        _, transition_matrix_list = get_hazard_rate(hazard_rate_type="experimental", datapath=datapath)
         batched_predict_lick = vmap(predict_lick, in_axes=(None, 0))
 
     # signals has to be specially prepared to get the vectorised code running
@@ -994,6 +997,7 @@ def control_model(datapath, savepath, training_savepath, cv_random_seed=None, ha
     :param savepath: where the model output will be saved (ie. the p(lick) for use in sampling)
     :param training_savepath: where the model training result will be saved (training, validation, test loss)
     Since there are no fitted parameters in the control model, this will just be the loss of the model in one epoch.
+    :param cv_random_seed : random seed for setting cross validation set
     :param hazard_rate: if hazard rate is a float, then it will be used a constant hazard rate value
     if it is a string - "experimental" - then uses the hazard rate obtained via trial data
     :param time_shift: time shift, if positive, then this is the delay between the posterior and p(lick)
@@ -1034,7 +1038,7 @@ def control_model(datapath, savepath, training_savepath, cv_random_seed=None, ha
     # Remove predictions after the mouse licks, since there are no real signals after the mouse licked
     prediction_matrix = np.where(lick_matrix == 99, onp.nan, prediction_matrix)
 
-    ## Get the training, cross-validation and test loss from the control model. ##
+    # Get the training, cross-validation and test loss from the control model.
     if cv_random_seed is None:
         cv_random_seed = onp.random.seed()
 
@@ -1048,8 +1052,8 @@ def control_model(datapath, savepath, training_savepath, cv_random_seed=None, ha
     y = mouse_reaction_df["outcome"]
 
     # y_train and y_test are just placeholders. This is only used to obtain the indices.
-    X_dev, X_test, y_dev, y_test = train_test_split(mouse_reaction_df, y, test_size=0.1,
-                                       random_state=cv_random_seed, stratify=y)
+    X_dev, X_test, y_dev, y_test = train_test_split(mouse_reaction_df, y, test_size=0.1, random_state=cv_random_seed,
+                                                    stratify=y)
 
     # further split validation set
     X_train, X_val, y_train, y_val = train_test_split(X_dev, y_dev, test_size=0.1,
@@ -1070,7 +1074,7 @@ def control_model(datapath, savepath, training_savepath, cv_random_seed=None, ha
                                           [lick_matrix_test, lick_matrix_val, lick_matrix_train],
                                             set_names):
         model_output = batched_predict_lick(None, s_matrix)
-        model_output = np.where(l_matrix == 99, onp.nan, model_output) # remove model output with no mouse data
+        model_output = np.where(l_matrix == 99, onp.nan, model_output)  # remove model output with no mouse data
         model_loss = matrix_weighted_cross_entropy_loss(l_matrix, model_output, alpha=1, cumulative_lick=False)
         training_result[set_name + "_loss"] = model_loss
 
@@ -1097,8 +1101,7 @@ def control_model(datapath, savepath, training_savepath, cv_random_seed=None, ha
     with open(training_savepath, "wb") as handle:
         pkl.dump(training_result, handle)
 
-
-    ## Save model output ##
+    # Save model output
 
     vec_dict = dict()
     vec_dict["change_value"] = change
@@ -1108,7 +1111,6 @@ def control_model(datapath, savepath, training_savepath, cv_random_seed=None, ha
     vec_dict["true_change_time"] = tau
     vec_dict["subjective_change"] = subjective_change
     vec_dict["hazard_rate"] = hazard_rate
-
 
     with open(savepath, "wb") as handle:
         pkl.dump(vec_dict, handle)
@@ -1196,12 +1198,9 @@ def test_vectorised_inference(exp_data_path):
     #     loss = cross_entropy_loss(l, p)
     #     print(loss)
 
-
-
     loss = loss_function_fit_vector_faster(param_vals)
     print("Loss from loss function:", loss)
 
-    # print("Shape of loss", np.shape(loss))
 
 def test_loss_function(datapath, plot_example=True, savepath=None):
 
@@ -1210,7 +1209,6 @@ def test_loss_function(datapath, plot_example=True, savepath=None):
 
     signal_matrix, lick_matrix = create_vectorised_data(datapath)
     batched_predict_lick = vmap(predict_lick, in_axes=(None, 0))
-
 
     # Plot examples
     if plot_example is True:
@@ -1470,13 +1468,21 @@ def get_hazard_rate_new(exp_data, hazard_rate_type="subjective", plot_hazard_rat
     return hazard_rate_vec, transition_matrix_list
 
 
-def make_transition_matrix(hazard_rate_vec):
+def make_transition_matrix(hazard_rate_vec, backward_prob_vec):
+    """
+    Make a list of transition matrices for each time point, determined by the length of hazard_rate_vec
+    :param hazard_rate_vec:
+    :param backward_prob:
+    :return:
+    """
+
     # standard logistic function to contrain values to [0, 1]
     # hazard_rate_vec = standard_sigmoid(hazard_rate_vec)
 
     # Custom logistic function to constrain values
     small_value = 0.01
     hazard_rate_vec = nonstandard_sigmoid(hazard_rate_vec, min_val=0, max_val=1, k=1, midpoint=2)
+    backward_prob_vec = nonstandard_sigmoid(backward_prob_vec, min_val=0, max_val=1, k=1, midpoint=2)
 
     # softmax
     # hazard_rate_vec = softmax(hazard_rate_vec)
@@ -1487,14 +1493,14 @@ def make_transition_matrix(hazard_rate_vec):
     # hazard_rate_vec = np.where(hazard_rate_vec >= 1, 1-small_value, hazard_rate_vec)
 
     transition_matrix_list = list()
-    for hazard_rate in hazard_rate_vec:
+    for hazard_rate, b in zip(hazard_rate_vec, backward_prob_vec):
         transition_matrix = np.array([[1 - hazard_rate, hazard_rate/5.0, hazard_rate/5.0, hazard_rate/5.0,
                                        hazard_rate/5.0, hazard_rate/5.0],
-                                  [0, 1, 0, 0, 0, 0],
-                                  [0, 0, 1, 0, 0, 0],
-                                  [0, 0, 0, 1, 0, 0],
-                                  [0, 0, 0, 0, 1, 0],
-                                  [0, 0, 0, 0, 0, 1]])
+                                  [b, 1 - b, 0, 0, 0, 0],
+                                  [b, 0, 1 - b, 0, 0, 0],
+                                  [b, 0, 0, 1 - b, 0, 0],
+                                  [b, 0, 0, 0, 1 - b, 0],
+                                  [b, 0, 0, 0, 0, 1 - b]])
         transition_matrix_list.append(transition_matrix)
 
     return transition_matrix_list
@@ -1686,7 +1692,7 @@ def gradient_descent_w_cv(exp_data_path, training_savepath, init_param_vals=np.a
     signal_matrix, lick_matrix = create_vectorised_data(exp_data_path,
                                                         lick_exponential_decay=False, decay_constant=1.0)
     # initialise hazard rate using experimental values
-    # hazard_rate, _ = get_hazard_rate(hazard_rate_type="subjective", datapath=exp_data_path)
+    hazard_rate, _ = get_hazard_rate(hazard_rate_type="experimental", datapath=exp_data_path)
 
     # fit constant hazard rate
     # hazard_rate = np.array([0.01])
@@ -1879,8 +1885,8 @@ def standard_sigmoid(input):
                     1.0 / (1.0 + np.exp(-input)),
                     np.exp(input) / (1.0 + np.exp(input)))
 
-
     return output
+
 
 def nonstandard_sigmoid(input, min_val=0.0, max_val=1.0, k=1, midpoint=0.5):
     # naive implementation
@@ -1915,14 +1921,21 @@ def predict_lick_w_hazard_rate(param_vals, signal):
 
     # impose some hard boundaries
 
+    # fully tunable hazard rate (and optional tunable constant backward probability)
     # posterior = forward_inference_w_tricks(signal.flatten())
     global transition_matrix_list
-    # transition_matrix_list = make_transition_matrix(hazard_rate_vec=param_vals[num_non_hazard_rate_params:])
+    hazard_rate_params = param_vals[num_non_hazard_rate_params:]
+    backward_prob_vec = np.repeat(param_vals[2], np.shape(hazard_rate_params)[0])  # use 1 if not tuning this.
+    transition_matrix_list = make_transition_matrix(hazard_rate_vec=hazard_rate_params,
+                                                    backward_prob_vec=backward_prob_vec)
+
     # ^ note this works due to zero-indexing. (if num=2, then we start from index 2, which is the 3rd param)
 
     # constant tunable hazard rate
-    hazard_rate_param = np.repeat(param_vals[num_non_hazard_rate_params:], max_signal_length)
-    transition_matrix_list = make_transition_matrix(hazard_rate_vec=hazard_rate_param)
+    # hazard_rate_param = np.repeat(param_vals[num_non_hazard_rate_params:], max_signal_length)
+    # backward_prob_vec = np.repeat(1, np.shape(hazard_rate_param)[0])
+    # transition_matrix_list = make_transition_matrix(hazard_rate_vec=hazard_rate_param,
+    # backward_prob_vec=backward_prob_vec)
 
     # add noise to the signal
     # key = random.PRNGKey(777)
@@ -2094,8 +2107,8 @@ def main(model_number=99, exp_data_number=83, run_test_foward_algorithm=False, r
         model_save_path = os.path.join(main_folder, "hmm_data/model_response_0" + str(exp_data_number) + "_"
                                        + str(model_number))
         run_through_dataset_fit_vector(datapath=datapath, savepath=model_save_path, training_savepath=training_savepath,
-                                       num_non_hazard_rate_param=2, fit_hazard_rate=True,
-                                       cv=True, param=None, t_shift=7)
+                                       num_non_hazard_rate_param=2, fit_hazard_rate=False,
+                                       cv=True, param=None, t_shift=6)
 
     if run_control_model is True:
         control_model(datapath=datapath, savepath=model_save_path, training_savepath=training_savepath,
@@ -2115,13 +2128,13 @@ def main(model_number=99, exp_data_number=83, run_test_foward_algorithm=False, r
         gradient_descent_w_cv(exp_data_path=datapath,
                               training_savepath=training_savepath,
                               # init_param_vals = np.array([10.0, 0.5, -3, 0.2, 0.2, 0.2]),
-                              init_param_vals=np.array([10.0, 0.5]),
-                              n_params=2, fit_hazard_rate=False,
+                              init_param_vals=np.array([10.0, 0.5, 0.2]),
+                              n_params=3, fit_hazard_rate=True,
                               time_shift_list=np.arange(0, 11), num_epoch=500, batch_size=512,
                               # fitted_params=["sigmoid_k", "sigmoid_midpoint", "stimulus_var",
                               #                "true_negative", "false_negative", "false_positive",
                               #                "hazard_rate"]
-                              fitted_params=["sigmoid_k", "sigmoid_midpoint"]
+                              fitted_params=["sigmoid_k", "sigmoid_midpoint", "backward_prob", "hazard_rate"]
                               )
 
 
@@ -2286,9 +2299,9 @@ def main(model_number=99, exp_data_number=83, run_test_foward_algorithm=False, r
 
 
 if __name__ == "__main__":
-    exp_data_number_list = [75, 78, 79, 80, 81, 83]  # [75, 78, 79, 80, 81, 83]
+    exp_data_number_list = [75]  # [75, 78, 79, 80, 81, 83]
     for exp_data_number in exp_data_number_list:
-        main(model_number=69, exp_data_number=exp_data_number, run_test_on_data=False, run_gradient_descent=True,
+        main(model_number=67, exp_data_number=exp_data_number, run_test_on_data=False, run_gradient_descent=False,
              run_plot_training_loss=True, run_plot_sigmoid=False, run_plot_time_shift_cost=False,
              run_plot_test_loss=False, run_model=False, run_plot_time_shift_test=False,
              run_plot_hazard_rate=False, run_plot_trained_hazard_rate=False, run_benchmark_model=False,
