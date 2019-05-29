@@ -40,11 +40,14 @@ stylesheet_path = "ts.mplstyle"
 
 def cal_p_x_given_z(x_k):
     z_mu = np.log(np.array([1.0, 1.25, 1.35, 1.50, 2.00, 4.00]))
-    z_var = np.array([0.25, 0.25, 0.25, 0.25, 0.25, 0.25]) ** 2 # in actual data, std is 0.25
-    # TODO: Variance needs to be converted from base 2 form back to base e form
+    z_var = np.array([0.25, 0.25, 0.25, 0.25, 0.25, 0.25]) ** 2  # in actual data, std is 0.25
 
-    # z_mu = np.log(np.array([1.0, 1.25]))
-    # z_var = np.array([0.25, 0.25])
+    # convert standard deviation from normal distribution to log-e normal
+    # z_var_normal = np.array([0.25, 0.25, 0.25, 0.25, 0.25, 0.25]) ** 2
+    # z_var = np.exp(z_var_normal) * (np.exp(z_var_normal) - 1)  # should be around 0.0687, and so std = 0.262
+
+    # use log-e normal mu
+    # z_mu = np.array([1.0, 1.25, 1.35, 1.50, 2.00, 4.00])
 
     p_x_given_z = (1 / np.sqrt(2 * np.pi * z_var)) * np.exp(-(x_k - z_mu) ** 2 / (2 * z_var))
 
@@ -856,7 +859,7 @@ def loss_function_fit_vector(param_vals):
 def run_through_dataset_fit_vector(datapath, savepath, training_savepath, param=None, num_non_hazard_rate_param=2,
                                    fit_hazard_rate=True,
                                    cv=False,
-                                   epoch_index=None):
+                                   epoch_index=None, t_shift=0):
     """
     Takes in the experimental data, and makes inference of p(lick) for each time point given the stimuli
     :param datapath:
@@ -866,7 +869,7 @@ def run_through_dataset_fit_vector(datapath, savepath, training_savepath, param=
     """
 
     global time_shift
-    time_shift = 6
+    time_shift = 7
 
     if param is None:
         # if no parameters specified, then load the training result and get the last param
@@ -932,6 +935,9 @@ def run_through_dataset_fit_vector(datapath, savepath, training_savepath, param=
 
     if fit_hazard_rate is True:
         batched_predict_lick = vmap(predict_lick_w_hazard_rate, in_axes=(None, 0))
+        # For use when training a constant hazard rate
+        global max_signal_length
+        max_signal_length = np.shape(lick_matrix)[1]
     else:
         global transition_matrix_list
         _, transition_matrix_list = get_hazard_rate(hazard_rate_type="constant", constant_val=0.0001, datapath=datapath)
@@ -973,6 +979,7 @@ def run_through_dataset_fit_vector(datapath, savepath, training_savepath, param=
     vec_dict["true_change_time"] = tau
     vec_dict["epoch_index"] = epoch_index
 
+    savepath = savepath + "_time_shift_" + str(t_shift) + ".pkl"
     with open(savepath, "wb") as handle:
         pkl.dump(vec_dict, handle)
 
@@ -1319,6 +1326,8 @@ def get_hazard_rate(hazard_rate_type="subjective", datapath=None, plot_hazard_ra
     experimental_hazard_rate = hazard_rate_hist / (1.0 - hazard_rate_cumsum)
     experimental_hazard_rate = onp.where(~onp.isfinite(experimental_hazard_rate), 1,
                                          experimental_hazard_rate)  # remove divide by zero Inf/NaN
+    experimental_hazard_rate = onp.where(experimental_hazard_rate > 1, 1,
+                                         experimental_hazard_rate)
 
 
     if hazard_rate_type == "subjective":
@@ -1350,8 +1359,9 @@ def get_hazard_rate(hazard_rate_type="subjective", datapath=None, plot_hazard_ra
         hazard_rate_vec = standard_sigmoid(hazard_rate_vec)
     if plot_hazard_rate is True:
         fig, ax = plt.subplots(1, 1, figsize=(8, 6))
-        ax.plot(subjective_hazard_rate, label="Subjective hazard rate")
-        ax.plot(experimental_hazard_rate, label="Experiment hazard rate")
+        # ax.plot(subjective_hazard_rate, label="Subjective hazard rate")
+        # ax.plot(experimental_hazard_rate, label="Experiment hazard rate")
+        ax.plot(hazard_rate_vec)
 
         ax.set_xlabel("Time (frames)")
         ax.set_ylabel("P(change)")
@@ -1819,8 +1829,8 @@ def gradient_descent_w_cv(exp_data_path, training_savepath, init_param_vals=np.a
 
                 # TODO: Write function to auto-stop based on CV loss
 
-            # get test loss at the end of training
-            if epoch == num_epoch:
+            # get test loss at the end of training (note the 0-indexing)
+            if epoch == (num_epoch-1):
                 # TODO: use the best params... (instead of the last)
                 test_loss = loss_function_batch(params, (signal_matrix_test, lick_matrix_test))
                 print("Test loss: " + str(test_loss))
@@ -1907,12 +1917,12 @@ def predict_lick_w_hazard_rate(param_vals, signal):
 
     # posterior = forward_inference_w_tricks(signal.flatten())
     global transition_matrix_list
-    transition_matrix_list = make_transition_matrix(hazard_rate_vec=param_vals[num_non_hazard_rate_params:])
+    # transition_matrix_list = make_transition_matrix(hazard_rate_vec=param_vals[num_non_hazard_rate_params:])
     # ^ note this works due to zero-indexing. (if num=2, then we start from index 2, which is the 3rd param)
 
     # constant tunable hazard rate
-    # hazard_rate_param = np.repeat(param_vals[num_non_hazard_rate_params:], max_signal_length)
-    # transition_matrix_list = make_transition_matrix(hazard_rate_vec=hazard_rate_param)
+    hazard_rate_param = np.repeat(param_vals[num_non_hazard_rate_params:], max_signal_length)
+    transition_matrix_list = make_transition_matrix(hazard_rate_vec=hazard_rate_param)
 
     # add noise to the signal
     # key = random.PRNGKey(777)
@@ -2038,12 +2048,17 @@ def gradient_clipping(gradients, type="L2_norm"):
     return new_gradients
 
 
+def get_max_signal_length(exp_data):
 
 
-def main(model_number=99, exp_data_number=83, run_test_foward_algorithm=False, run_test_on_data=False, run_gradient_descent=False, run_plot_training_loss=False, run_plot_sigmoid=False, run_plot_test_loss=False,
+    return max_signal_length
+
+def main(model_number=99, exp_data_number=83, run_test_foward_algorithm=False, run_test_on_data=False, run_gradient_descent=False,
+         run_plot_training_loss=False, run_plot_sigmoid=False, run_plot_test_loss=False,
          run_model=False, run_plot_time_shift_test=False, run_plot_hazard_rate=False, run_plot_trained_hazard_rate=False,
          run_benchmark_model=False, run_plot_time_shift_training_result=False, run_plot_posterior=False, run_control_model=False,
-         run_plot_signal=False, run_plot_trained_posterior=False, run_plot_trained_sigmoid=False, run_plot_time_shift_cost=False):
+         run_plot_signal=False, run_plot_trained_posterior=False, run_plot_trained_sigmoid=False, run_plot_time_shift_cost=False,
+         run_plot_change_times=False):
     home = expanduser("~")
     print("Running model: ", str(model_number))
     print("Using mouse: ", str(exp_data_number))
@@ -2076,9 +2091,11 @@ def main(model_number=99, exp_data_number=83, run_test_foward_algorithm=False, r
         test_on_data(change_val=1.25, exp_data_file=datapath)
 
     if run_model is True:
+        model_save_path = os.path.join(main_folder, "hmm_data/model_response_0" + str(exp_data_number) + "_"
+                                       + str(model_number))
         run_through_dataset_fit_vector(datapath=datapath, savepath=model_save_path, training_savepath=training_savepath,
                                        num_non_hazard_rate_param=2, fit_hazard_rate=True,
-                                       cv=True, param=None)
+                                       cv=True, param=None, t_shift=7)
 
     if run_control_model is True:
         control_model(datapath=datapath, savepath=model_save_path, training_savepath=training_savepath,
@@ -2161,17 +2178,47 @@ def main(model_number=99, exp_data_number=83, run_test_foward_algorithm=False, r
         ax.legend(title="Mouse")
         fig.savefig(figsavepath)
 
-        plt.show()
+        # plot trained sigmoid parameters
+        figsavepath = os.path.join(main_folder, "figures", "sigmoid",
+                                   "mouse_sigmoid_params_" + str(model_number) + "_beta")
+        fig, ax = plt.subplots(figsize=(4, 4))
+        for exp_data_number, label in zip(exp_data_number_list, label_list):
+            training_savepath = os.path.join(main_folder, "hmm_data/training_result_0" + str(exp_data_number) + "_"
+                                             + str(model_number) + ".pkl")
+            with open(training_savepath, "rb") as handle:
+                training_result = pkl.load(handle)
+            fig, ax = nmt_plot.plot_trained_sigmoid_param(fig, ax, training_result, param_conversion_func=None,
+                                                    training_epoch=None, label=label)
 
-
+        ax.grid()
+        ax.legend(title="Mouse")
+        fig.savefig(figsavepath)
 
     if run_plot_trained_hazard_rate is True:
         figsavepath = os.path.join(main_folder, "figures/trained_hazard_rate_model_" + str(model_number) + "_mouse_"
                                    + str(exp_data_number))
+
+        # get max_signal_length, for when constant hazard rate is used
+        _, lick_matrix = create_vectorised_data(datapath)
+        max_signal_length = np.shape(lick_matrix)[1]
         sigmoid_function = functools.partial(nonstandard_sigmoid, min_val=0, max_val=1.0, k=1, midpoint=0.5)
-        fig, ax = nmt_plot.plot_trained_hazard_rate(training_savepath, sigmoid_function, num_non_hazard_rate_param=0)
+        fig, ax = nmt_plot.plot_trained_hazard_rate(training_savepath, sigmoid_function, num_non_hazard_rate_param=2,
+                                                    constant_hazard_rate=False, max_signal_length=max_signal_length)
         fig.set_size_inches(8, 4)
         fig.savefig(figsavepath)
+
+        # compare mouse and model
+        figsavepath = os.path.join(main_folder, "figures/hazard_rate_comparison_model_" + str(model_number) + "_mouse_"
+                                   + str(exp_data_number))
+        fig, ax = nmt_plot.plot_trained_hazard_rate(training_savepath, sigmoid_function, num_non_hazard_rate_param=2,
+                                                    constant_hazard_rate=False, max_signal_length=max_signal_length)
+        mouse_hazard_rate, _ = get_hazard_rate(hazard_rate_type="experimental", datapath=datapath,
+                                               plot_hazard_rate=False,
+                        figsavepath=None)
+        ax.plot(mouse_hazard_rate)
+        ax.legend(["Model", "Mouse"])
+        fig.savefig(figsavepath)
+
 
     if run_plot_time_shift_test is True:
         for trial_num in np.arange(0, 5):
@@ -2182,16 +2229,17 @@ def main(model_number=99, exp_data_number=83, run_test_foward_algorithm=False, r
         # get_hazard_rate(hazard_rate_type="subjective", datapath=datapath, plot_hazard_rate=True,
         #                  figsavepath=figsavepath)
 
-        mouse_hazard_rate, _ = get_hazard_rate(hazard_rate_type="subjective", datapath=datapath, plot_hazard_rate=False,
-                        figsavepath=None)
+        mouse_hazard_rate, _ = get_hazard_rate(hazard_rate_type="experimental", datapath=datapath,
+                                               plot_hazard_rate=False,
+                        figsavepath=figsavepath)
 
-        model_hazard_rate = get_trained_hazard_rate(training_savepath, num_non_hazard_rate_param=6,
-                                                    epoch_num=348, param_process_method="sigmoid")
-        model_hazard_rate = model_hazard_rate[6:-11]  # remove the time-shifted bits at the end
-        plt.plot(model_hazard_rate)
-        fig = nmt_plot.compare_model_mouse_hazard_rate(model_hazard_rate, mouse_hazard_rate,
-                                                       scale_method="sum")
-        plt.show()
+        # model_hazard_rate = get_trained_hazard_rate(training_savepath, num_non_hazard_rate_param=6,
+        #                                             epoch_num=348, param_process_method="sigmoid")
+        # model_hazard_rate = model_hazard_rate[6:-11]  # remove the time-shifted bits at the end
+        # plt.plot(model_hazard_rate)
+        # fig = nmt_plot.compare_model_mouse_hazard_rate(model_hazard_rate, mouse_hazard_rate,
+        #                                                scale_method="sum")
+        # plt.show()
 
     if run_benchmark_model is True:
         figsavepath = os.path.join(main_folder, "figures/loss_benchmark_model_" + str(model_number) + ".png")
@@ -2226,14 +2274,25 @@ def main(model_number=99, exp_data_number=83, run_test_foward_algorithm=False, r
                                num_examples=10, random_seed=777,
                                figsavepath=figsavepath, plot_cumulative=False)
 
+    if run_plot_change_times is True:
+        with open(datapath, "rb") as handle:
+            exp_data = pkl.load(handle)
+
+        figsavepath = os.path.join(main_folder, "figures/exp_data_plots/change_times" + "_mouse_" +
+                                   str(exp_data_number))
+        fig, ax = nmt_plot.plot_change_times(exp_data, xlim=[0, 350])
+        fig.set_size_inches(4, 4)
+        fig.savefig(figsavepath)
+
 
 if __name__ == "__main__":
     exp_data_number_list = [75, 78, 79, 80, 81, 83]  # [75, 78, 79, 80, 81, 83]
     for exp_data_number in exp_data_number_list:
         main(model_number=69, exp_data_number=exp_data_number, run_test_on_data=False, run_gradient_descent=True,
-             run_plot_training_loss=False, run_plot_sigmoid=False, run_plot_time_shift_cost=False,
+             run_plot_training_loss=True, run_plot_sigmoid=False, run_plot_time_shift_cost=False,
              run_plot_test_loss=False, run_model=False, run_plot_time_shift_test=False,
              run_plot_hazard_rate=False, run_plot_trained_hazard_rate=False, run_benchmark_model=False,
              run_plot_time_shift_training_result=False, run_plot_posterior=False, run_control_model=False,
-             run_plot_signal=False, run_plot_trained_posterior=False, run_plot_trained_sigmoid=False)
+             run_plot_signal=False, run_plot_trained_posterior=False, run_plot_trained_sigmoid=False,
+             run_plot_change_times=False)
 
