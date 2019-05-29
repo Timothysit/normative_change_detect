@@ -61,7 +61,10 @@ def plot_training_loss(training_savepath, figsavepath=None, cv=False, time_shift
         ax1.legend(frameon=False)
         fig.tight_layout()
     elif cv is True and time_shift is True:
-        fig, ax = plt.subplots(2, 5, sharey=True, sharex=True)
+        plt.style.use(stylesheet_path)
+        fig, ax = plt.subplots(2, 5, sharey=True, sharex=True, figsize=(8, 4))
+
+        # actual plot
         ax = ax.flatten()
         time_shift_list = training_result["time_shift"]
         for n, time_shift in enumerate(np.unique(time_shift_list)[1:]):  # quick hack: remove the first one for (0, 11)
@@ -69,7 +72,13 @@ def plot_training_loss(training_savepath, figsavepath=None, cv=False, time_shift
             ax[n].plot(train_loss[time_shift_index] / train_set_size, label="Training loss")
             ax[n].plot(val_loss[time_shift_index] / val_set_size, label="Validation loss")
             ax[n].set_title("Time shift:" + str(time_shift))
-            ax[n].set_ylabel("Mean loss")
+            if n == 0 or n == 5:
+                ax[n].set_ylabel("Mean loss")
+            ax[n].grid()
+
+        # set common labels
+        fig.text(0.5, 0.04, 'Epochs (10s)', ha='center', va='center')
+
 
     if cv is False:
         print("Minimum training loss:", str(min(loss)))
@@ -897,7 +906,8 @@ def plot_multi_model_psychometric_error(model_comparison_df, multiple_mice=False
         ax.set_ylabel("Mean-square error")
         ax.set_xlabel("Model")
         ax.legend(title="Mouse")
-        plt.xticks(ticks=[1, 2], labels=model_names)
+        tick_locs = np.arange(1, len(model_names)+1)
+        plt.xticks(ticks=tick_locs, labels=model_names)
     else:
         fig, ax = plt.subplots(figsize=(8, 6))
         psychometric_metric = ["hit_exclude_FA_fit"]
@@ -953,7 +963,8 @@ def plot_multi_model_rt_error(model_comparison_df, multiple_mice=False, model_na
         ax.set_ylabel("KS statistic")
         ax.set_xlabel("Model")
         ax.legend(title="Mouse")
-        plt.xticks(ticks=[1, 2], labels=model_names)
+        tick_locs = np.arange(1, len(model_names)+1)
+        plt.xticks(ticks=tick_locs, labels=model_names)
 
     return fig
 
