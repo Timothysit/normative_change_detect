@@ -44,7 +44,7 @@ def find_pulses(exp_data):
     for trial in np.arange(num_trial):
         trial_signal = signals[trial][0][0]
         change_time = exp_data["change"].flatten()[trial]
-        trial_baseline_signal = trial_signal[:change_time]
+        trial_baseline_signal = trial_signal[:change_time-1]  # convert to 0-indexing!
         fast_pulse_loc.append(np.where(trial_baseline_signal >= fast_pulse_threshold)[0])
         slow_pulse_loc.append(np.where(trial_baseline_signal <= slow_pulse_threshold)[0])
         reference_pulse_loc.append(np.where((trial_baseline_signal >= reference_pulse_low_bound) &
@@ -53,25 +53,12 @@ def find_pulses(exp_data):
     return slow_pulse_loc, fast_pulse_loc, reference_pulse_loc
 
 
-
-
-def align_pulse_w_model_output(pulse_loc_list, model_output, window_width=10,
-                               trial_subset=None, linecolor="blue", exclude_close_pulse=True):
-    """
-
-    :param pulse_loc_list:
-    :param model_output:
-    :param window_width:
-    :param trial_subset:
-    :param linecolor:
-    :param exclude_close_pulse: whether to exclude pulses that are within window_width of each other.
-    :return:
-    """
-    fig, ax = plt.subplots()
+def get_align_pulse_w_model_output(pulse_loc_list, model_output, window_width=10,
+                               trial_subset=None, exclude_close_pulse=True):
 
     model_output_store = list()
 
-    peri_pulse_time = np.arange(0, window_width+1) - window_width/2
+    # peri_pulse_time = np.arange(0, window_width+1) - window_width/2
 
     # Naive implementation with loops (there is probably a better way to do this)
     if trial_subset is None:
@@ -96,16 +83,76 @@ def align_pulse_w_model_output(pulse_loc_list, model_output, window_width=10,
     model_output_mean = np.nanmean(model_output_store, axis=0)
     model_output_std = np.nanstd(model_output_store, axis=0)
 
-    ax.plot(peri_pulse_time, model_output_mean)
-    ax.fill_between(peri_pulse_time, model_output_mean - model_output_std,
-                    model_output_mean + model_output_std, alpha=0.3)
+    return model_output_mean, model_output_std, model_output_array
 
-    # TODO: still need to get this right
-    # ax.set_xticklabels(np.arange(0, window_width+1) - window_width/2)
+
+def align_pulse_w_model_output(pulse_loc_list, model_output, window_width=10,
+                               trial_subset=None, linecolor="blue", exclude_close_pulse=True,
+                               intermediate_pulse_loc=None, fig=None, ax=None, linelabel=None):
+    """
+
+    :param pulse_loc_list:
+    :param model_output:
+    :param window_width:
+    :param trial_subset:
+    :param linecolor:
+    :param exclude_close_pulse: whether to exclude pulses that are within window_width of each other.
+    :return:
+    """
+    if fig is None:
+        fig, ax = plt.subplots()
+
+    model_output_store = list()
+
+    peri_pulse_time = np.arange(0, window_width+1) - window_width/2
+
+    # Naive implementation with loops (there is probably a better way to do this)
+    if trial_subset is None:
+        num_trial = len(pulse_loc_list)
+    else:
+        num_trial = trial_subset
+    for trial in tqdm(np.arange(num_trial)):
+        if exclude_close_pulse is True:
+            if len(pulse_loc_list[trial]) >= 2:
+                for n, pulse_interval in enumerate(np.diff(pulse_loc_list[trial])):
+                    if pulse_interval <= window_width:
+                        pulse_loc_list[trial] = np.delete(pulse_loc_list[trial], [n, n+1])
+        for pulse_loc in pulse_loc_list[trial]:
+            model_trial_output = model_output[trial, int(pulse_loc-window_width/2):int(pulse_loc+window_width/2)+1]
+            if len(model_trial_output) == (window_width+1):
+                model_output_store.append(model_trial_output)
+                # ax.plot(peri_pulse_time, model_trial_output,
+                #     alpha=0.1, color=linecolor)
+
+    # model_output_array = np.vstack(model_output_store)
+
+    model_output_mean = np.nanmean(model_output_store, axis=0)
+    model_output_std = np.nanstd(model_output_store, axis=0)
+
+    if intermediate_pulse_loc is not None:
+        intermediate_pulse_loc_mean, _, _ = get_align_pulse_w_model_output(intermediate_pulse_loc,
+                                                                           model_output=model_output,
+                                                                           window_width=window_width,
+                                                                           trial_subset=None,
+                                                                           exclude_close_pulse=exclude_close_pulse)
+        model_output_mean = model_output_mean - intermediate_pulse_loc_mean
+
+    ax.plot(peri_pulse_time, model_output_mean, color=linecolor, label=linelabel)
+
+    if intermediate_pulse_loc is None:
+        ax.fill_between(peri_pulse_time, model_output_mean - model_output_std,
+                     model_output_mean + model_output_std, alpha=0.3, color=linecolor)
+
+
     ax.set_xlabel("Peri-pulse time (frames)")
-    ax.set_ylabel(r"$P(z_\mathrm{change} \vert x_k)$")
+    if intermediate_pulse_loc is not None:
+        ax.set_ylabel(r"$P(z_\mathrm{change} \vert x_k) - P(z_\mathrm{change} \vert x_k)_\mathrm{reference}$")
+    else:
+        ax.set_ylabel(r"$P(z_\mathrm{change} \vert x_k)$")
+
 
     return fig, ax
+
 
 def plot_model_pulse_response_dist(fig, ax, pulse_loc_list, model_output, color="blue"):
     num_trial = len(pulse_loc_list)
@@ -135,7 +182,7 @@ def main(model_number=67, mouse_number=83, time_shift=7):
     with open(model_path, "rb") as handle:
         model_data = pkl.load(handle)
 
-    slow_pulse_loc, fast_pulse_loc, intermediate_pulse = find_pulses(exp_data)
+    slow_pulse_loc, fast_pulse_loc, intermediate_pulse_loc = find_pulses(exp_data)
 
     # plot pulse speed distribution just to double check
     figname = "pulse_speed_distribution"
@@ -183,6 +230,50 @@ def main(model_number=67, mouse_number=83, time_shift=7):
     figname = "posterior_response_aligned_slow_pulse_mean_window50"
     fig.set_size_inches(4, 4)
     fig.savefig(os.path.join(fig_folder, figname), dpi=300)
+
+
+    fig, ax = align_pulse_w_model_output(pulse_loc_list=intermediate_pulse_loc, model_output=model_output,
+                                window_width=50, trial_subset=1000, linecolor="gray")
+    ax.grid()
+    figname = "posterior_response_aligned_intermediate_mean_window50"
+    fig.set_size_inches(4, 4)
+    fig.savefig(os.path.join(fig_folder, figname), dpi=300)
+
+    # Intermediate subtracted
+    """
+    fig, ax = align_pulse_w_model_output(pulse_loc_list=fast_pulse_loc, model_output=model_output,
+                                         intermediate_pulse_loc=intermediate_pulse_loc,
+                                window_width=50, trial_subset=1000, linecolor="blue")
+    ax.grid()
+    fig.set_size_inches(4, 4)
+    figname = "posterior_response_aligned_fast_pulse_intermediate_subtracted_window50"
+    fig.savefig(os.path.join(fig_folder, figname), dpi=300)
+
+    fig, ax = align_pulse_w_model_output(pulse_loc_list=slow_pulse_loc, model_output=model_output,
+                                         intermediate_pulse_loc=intermediate_pulse_loc,
+                                window_width=50, trial_subset=1000, linecolor="orange")
+    ax.grid()
+    figname = "posterior_response_aligned_slow_pulse_intermediate_subtracted__window50"
+    fig.set_size_inches(4, 4)
+    fig.savefig(os.path.join(fig_folder, figname), dpi=300)
+    """
+
+    # Both fast and slow on the same plot
+
+    fig, ax = plt.subplots()
+    fig, ax = align_pulse_w_model_output(fig=fig, ax=ax, pulse_loc_list=fast_pulse_loc, model_output=model_output,
+                                         intermediate_pulse_loc=intermediate_pulse_loc, exclude_close_pulse=False,
+                                window_width=50, trial_subset=1000, linecolor="blue", linelabel="Fast pulse")
+    fig, ax = align_pulse_w_model_output(fig=fig, ax=ax, pulse_loc_list=slow_pulse_loc, model_output=model_output,
+                                         intermediate_pulse_loc=intermediate_pulse_loc, exclude_close_pulse=False,
+                                window_width=50, trial_subset=1000, linecolor="orange", linelabel="Slow pulse")
+    ax.grid()
+    ax.legend()
+    figname = "posterior_response_aligned_both_pulse_intermediate_subtracted_window50_include_close_pulse"
+    fig.set_size_inches(4, 4)
+    fig.savefig(os.path.join(fig_folder, figname), dpi=300)
+
+
 
 
 if __name__ == "__main__":
