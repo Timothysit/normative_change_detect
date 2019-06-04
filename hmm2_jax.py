@@ -214,6 +214,53 @@ def forward_inference_custom_transition_matrix(x):
     return np.array(p_change_given_x)
 
 
+
+def forward_inference_stat(x):
+    """
+    :param transtiion_matrix_list: global variable with list of transition matrices
+    :param x: signal to predict
+    :return:
+    """
+
+    p_change_given_z = list()
+
+    init_state_probability = np.array([1.0, 0.0, 0.0, 0.0, 0.0, 0.0])
+
+    # List to store the posterior: p(z_k | x_{1:k}) for k = 1, ..., n
+    p_z_given_x = np.zeros((len(x), 6)) # this will be a n x M matrix,
+    # not sure if this is can be created without array assignment..
+    p_change_given_x = list()
+    p_baseline_given_x = list()
+    # p_xk_given_z_store = np.zeros((len(x), 6))
+
+    # Initial probabilities
+    p_z_and_x = cal_p_x_given_z(x_k=x[0]) * init_state_probability
+    p_z_given_x = p_z_and_x / np.sum(p_z_and_x)
+
+
+    # add the initial probability to the output list
+    p_change_given_x.append(0)
+
+    # Loop through the rest of the samples to compute P(x_k, z_k) for each
+    for k in np.arange(1, len(x)):
+        p_xk_given_z = cal_p_x_given_z(x_k=x[k])
+
+        # update conditional probability
+        p_z_and_x = np.dot((p_xk_given_z * p_z_given_x), transition_matrix_list[k-1])
+
+        # NOTE: This step is not the conventional forward algorithm, but works.
+        # p_z_given_x[k, :] = p_z_and_x / np.sum(p_z_and_x)
+        # p_zk_given_xk = p_z_and_x / np.sum(p_z_and_x)
+        p_z_given_x = np.divide(p_z_and_x, np.sum(p_z_and_x))
+
+        p_change_given_x.append(np.sum(p_z_given_x[1:])) # sum from the second element
+        # p_baseline_given_x.append(p_z_given_x[0]) # Just 1 - p_change
+
+        p_change_given_z.append(np.sum(p_change_given_z[1:]))
+
+    return np.array(p_change_given_x)
+
+
 def apply_cost_benefit(change_posterior, true_positive=1.0, true_negative=1.0, false_negative=1.0, false_positive=1.0):
     """
     computes decision value based on cost and benefit
@@ -870,7 +917,7 @@ def run_through_dataset_fit_vector(datapath, savepath, training_savepath, param=
     """
 
     global time_shift
-    time_shift = 6
+    time_shift = 7
 
     if param is None:
         # if no parameters specified, then load the training result and get the last param
@@ -2066,12 +2113,36 @@ def get_max_signal_length(exp_data):
 
     return max_signal_length
 
+
+def get_model_posterior(exp_data, training_result, num_non_hazard_rate_params=2):
+
+    min_val_loss = min(training_result["mean_val_loss"])
+    epoch_index = onp.where(training_result["mean_val_loss"] == min_val_loss)[0][0]
+    param_vals = training_result["param_val"][epoch_index]
+    hazard_rate_params = param_vals[num_non_hazard_rate_params:]
+
+    global transition_matrix_list
+    transition_matrix_list = make_transition_matrix(hazard_rate_vec=hazard_rate_params,
+                                                    backward_prob_vec=np.repeat(0.0, len(hazard_rate_params)))
+
+    vmap_forward_inference = vmap(forward_inference_custom_transition_matrix)
+
+    posterior = list()
+
+    signal_matrix, _ = create_vectorised_data_new(exp_data)
+
+    posterior = vmap_forward_inference(signal_matrix)
+
+    hazard_rate = nonstandard_sigmoid(hazard_rate_params, min_val=0, max_val=1, k=1, midpoint=2)
+
+    return posterior, hazard_rate
+
 def main(model_number=99, exp_data_number=83, run_test_foward_algorithm=False, run_test_on_data=False, run_gradient_descent=False,
          run_plot_training_loss=False, run_plot_sigmoid=False, run_plot_test_loss=False,
          run_model=False, run_plot_time_shift_test=False, run_plot_hazard_rate=False, run_plot_trained_hazard_rate=False,
          run_benchmark_model=False, run_plot_time_shift_training_result=False, run_plot_posterior=False, run_control_model=False,
          run_plot_signal=False, run_plot_trained_posterior=False, run_plot_trained_sigmoid=False, run_plot_time_shift_cost=False,
-         run_plot_change_times=False):
+         run_plot_change_times=False, run_get_model_posterior=False):
     home = expanduser("~")
     print("Running model: ", str(model_number))
     print("Using mouse: ", str(exp_data_number))
@@ -2107,8 +2178,8 @@ def main(model_number=99, exp_data_number=83, run_test_foward_algorithm=False, r
         model_save_path = os.path.join(main_folder, "hmm_data/model_response_0" + str(exp_data_number) + "_"
                                        + str(model_number))
         run_through_dataset_fit_vector(datapath=datapath, savepath=model_save_path, training_savepath=training_savepath,
-                                       num_non_hazard_rate_param=2, fit_hazard_rate=False,
-                                       cv=True, param=None, t_shift=6)
+                                       num_non_hazard_rate_param=3, fit_hazard_rate=True,
+                                       cv=True, param=None, t_shift=7)
 
     if run_control_model is True:
         control_model(datapath=datapath, savepath=model_save_path, training_savepath=training_savepath,
@@ -2297,15 +2368,42 @@ def main(model_number=99, exp_data_number=83, run_test_foward_algorithm=False, r
         fig.set_size_inches(4, 4)
         fig.savefig(figsavepath)
 
+    if run_get_model_posterior is True:
+
+        with open(training_savepath, "rb") as handle:
+            training_result = pkl.load(handle)
+        with open(datapath, "rb") as handle:
+            exp_data = pkl.load(handle)
+
+        posterior, hazard_rate = get_model_posterior(exp_data, training_result=training_result)
+
+        model_posterior_save_path = os.path.join(main_folder, "hmm_data", "model_posterior_mouse_"
+                                                 + str(exp_data_number) + "_model_" + str(model_number) + ".pkl")
+
+        with open(model_posterior_save_path, "wb") as handle:
+            pkl.dump(posterior, handle)
+
+def early_stop(old_loss, new_loss, alpha=0.0001):
+    # TODO: to be added to the gradient descent function
+    if abs(old_loss - new_loss) < alpha * abs(old_loss):
+        stop = 1
+    else:
+        stop = 0
+    return stop
+
+def test_rel_loss():
+    rel_difference = list()
+    for v_old, v_new in zip(val_loss[0:48], val_loss[1:49]):
+        rel_difference.append(abs(v_old - v_new) / abs(v_old))
 
 if __name__ == "__main__":
-    exp_data_number_list = [75]  # [75, 78, 79, 80, 81, 83]
+    exp_data_number_list = [83]  # [75, 78, 79, 80, 81, 83]
     for exp_data_number in exp_data_number_list:
-        main(model_number=67, exp_data_number=exp_data_number, run_test_on_data=False, run_gradient_descent=False,
-             run_plot_training_loss=True, run_plot_sigmoid=False, run_plot_time_shift_cost=False,
-             run_plot_test_loss=False, run_model=False, run_plot_time_shift_test=False,
+        main(model_number=70, exp_data_number=exp_data_number, run_test_on_data=False, run_gradient_descent=False,
+             run_plot_training_loss=False, run_plot_sigmoid=False, run_plot_time_shift_cost=False,
+             run_plot_test_loss=False, run_model=True, run_plot_time_shift_test=False,
              run_plot_hazard_rate=False, run_plot_trained_hazard_rate=False, run_benchmark_model=False,
              run_plot_time_shift_training_result=False, run_plot_posterior=False, run_control_model=False,
              run_plot_signal=False, run_plot_trained_posterior=False, run_plot_trained_sigmoid=False,
-             run_plot_change_times=False)
+             run_plot_change_times=False, run_get_model_posterior=False)
 
