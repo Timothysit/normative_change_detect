@@ -9,7 +9,7 @@ import pickle as pkl
 import pandas as pd
 from tqdm import tqdm
 
-def find_pulses(exp_data):
+def find_pulses(exp_data, window_width=50):
     """
     Find pulse locations from the signals.
     Fast pulse: 1.5 standard deviations above the mean temporal frequency (during baseline period)
@@ -22,17 +22,18 @@ def find_pulses(exp_data):
     # TODO: Think about early vs. late fast vs. slow pulses (blocks)
 
     signals = exp_data["ys"]
-    change_times = exp_data["change"][0].flatten()
+    # change_times = exp_data["change"][0].flatten()
 
     signal_baseline = 0
     baseline_std = 0.25
-    fast_pulse_threshold = signal_baseline + (baseline_std * 1.5)
-    slow_pulse_threshold = signal_baseline - (baseline_std * 1.5)
+    fast_pulse_threshold = signal_baseline + (baseline_std * 0.5)
+    slow_pulse_threshold = signal_baseline - (baseline_std * 0.5)
 
     # Reference pulse criteria
     reference_pulse_loc = list()
-    reference_pulse_low_bound = signal_baseline - (baseline_std * 0.5)
-    reference_pulse_up_bound = signal_baseline + (baseline_std * 0.5)
+    reference_pulse_std_multiplier = 1.5
+    reference_pulse_low_bound = signal_baseline - (baseline_std * reference_pulse_std_multiplier)
+    reference_pulse_up_bound = signal_baseline + (baseline_std * reference_pulse_std_multiplier)
 
     # For loop implementation (there may be a vectorised way...)
 
@@ -45,6 +46,7 @@ def find_pulses(exp_data):
         trial_signal = signals[trial][0][0]
         change_time = exp_data["change"].flatten()[trial]
         trial_baseline_signal = trial_signal[:change_time-1]  # convert to 0-indexing!
+        # trial_baseline_signal = trial_signal[:change_time - 1 - int(window_width/2)]
         fast_pulse_loc.append(np.where(trial_baseline_signal >= fast_pulse_threshold)[0])
         slow_pulse_loc.append(np.where(trial_baseline_signal <= slow_pulse_threshold)[0])
         reference_pulse_loc.append(np.where((trial_baseline_signal >= reference_pulse_low_bound) &
@@ -167,8 +169,10 @@ def plot_model_pulse_response_dist(fig, ax, pulse_loc_list, model_output, color=
 
     return fig, ax
 
-def main(model_number=67, mouse_number=83, time_shift=7):
+def main(model_number=70, mouse_number=75, time_shift=7):
     home = os.path.expanduser("~")
+    mouse_model_info = "_model_" + str(model_number) + "_mouse_" + str(mouse_number)
+    additional_info = "before_change_window"
     print("Running alignment with mouse %d and model %d" % (mouse_number, model_number))
     main_folder = os.path.join(home, "Dropbox/notes/Projects/second_rotation_project/normative_model")
     fig_folder = os.path.join(main_folder, "figures", "alignment_plots")
@@ -182,10 +186,10 @@ def main(model_number=67, mouse_number=83, time_shift=7):
     with open(model_path, "rb") as handle:
         model_data = pkl.load(handle)
 
-    slow_pulse_loc, fast_pulse_loc, intermediate_pulse_loc = find_pulses(exp_data)
+    slow_pulse_loc, fast_pulse_loc, intermediate_pulse_loc = find_pulses(exp_data, window_width=50)
 
     # plot pulse speed distribution just to double check
-    figname = "pulse_speed_distribution"
+    figname = "pulse_speed_distribution" + mouse_model_info
     nmt.set_style()
     fig, ax = plt.subplots(figsize=(4, 4))
     fig, ax = nmt.plot_pulse_speed_distribution(fig, ax, fast_pulse_loc=fast_pulse_loc, slow_pulse_loc=slow_pulse_loc,
@@ -193,7 +197,7 @@ def main(model_number=67, mouse_number=83, time_shift=7):
     fig.savefig(os.path.join(fig_folder, figname), dpi=300)
 
     # plot pulse time distribution
-    figname = "pulse_time_distribution"
+    figname = "pulse_time_distribution" + mouse_model_info
     fig, ax = plt.subplots(figsize=(4, 4))
     fig, ax = nmt.plot_pulse_time(fig, ax, fast_pulse_loc=fast_pulse_loc, slow_pulse_loc=slow_pulse_loc,
                               color=["blue", "orange"])
@@ -213,7 +217,7 @@ def main(model_number=67, mouse_number=83, time_shift=7):
                                              model_output=model_output, color="blue")
     fig, ax = plot_model_pulse_response_dist(fig, ax, pulse_loc_list=slow_pulse_loc,
                                              model_output=model_output, color="orange")
-    figname = "posterior_response_distribution"
+    figname = "posterior_response_distribution" + mouse_model_info
     fig.savefig(os.path.join(fig_folder, figname), dpi=300)
 
     # Plot posterior / model output aligned to pulse
@@ -221,13 +225,13 @@ def main(model_number=67, mouse_number=83, time_shift=7):
                                 window_width=50, trial_subset=1000, linecolor="blue")
     ax.grid()
     fig.set_size_inches(4, 4)
-    figname = "posterior_response_aligned_fast_pulse_mean_window50"
+    figname = "posterior_response_aligned_fast_pulse_mean_window50" + mouse_model_info
     fig.savefig(os.path.join(fig_folder, figname), dpi=300)
 
     fig, ax = align_pulse_w_model_output(pulse_loc_list=slow_pulse_loc, model_output=model_output,
                                 window_width=50, trial_subset=1000, linecolor="orange")
     ax.grid()
-    figname = "posterior_response_aligned_slow_pulse_mean_window50"
+    figname = "posterior_response_aligned_slow_pulse_mean_window50" + mouse_model_info
     fig.set_size_inches(4, 4)
     fig.savefig(os.path.join(fig_folder, figname), dpi=300)
 
@@ -235,46 +239,33 @@ def main(model_number=67, mouse_number=83, time_shift=7):
     fig, ax = align_pulse_w_model_output(pulse_loc_list=intermediate_pulse_loc, model_output=model_output,
                                 window_width=50, trial_subset=1000, linecolor="gray")
     ax.grid()
-    figname = "posterior_response_aligned_intermediate_mean_window50"
+    figname = "posterior_response_aligned_intermediate_mean_window50" + mouse_model_info
     fig.set_size_inches(4, 4)
     fig.savefig(os.path.join(fig_folder, figname), dpi=300)
 
     # Intermediate subtracted
-    """
-    fig, ax = align_pulse_w_model_output(pulse_loc_list=fast_pulse_loc, model_output=model_output,
-                                         intermediate_pulse_loc=intermediate_pulse_loc,
-                                window_width=50, trial_subset=1000, linecolor="blue")
-    ax.grid()
-    fig.set_size_inches(4, 4)
-    figname = "posterior_response_aligned_fast_pulse_intermediate_subtracted_window50"
-    fig.savefig(os.path.join(fig_folder, figname), dpi=300)
-
-    fig, ax = align_pulse_w_model_output(pulse_loc_list=slow_pulse_loc, model_output=model_output,
-                                         intermediate_pulse_loc=intermediate_pulse_loc,
-                                window_width=50, trial_subset=1000, linecolor="orange")
-    ax.grid()
-    figname = "posterior_response_aligned_slow_pulse_intermediate_subtracted__window50"
-    fig.set_size_inches(4, 4)
-    fig.savefig(os.path.join(fig_folder, figname), dpi=300)
-    """
 
     # Both fast and slow on the same plot
 
     fig, ax = plt.subplots()
     fig, ax = align_pulse_w_model_output(fig=fig, ax=ax, pulse_loc_list=fast_pulse_loc, model_output=model_output,
                                          intermediate_pulse_loc=intermediate_pulse_loc, exclude_close_pulse=False,
-                                window_width=50, trial_subset=1000, linecolor="blue", linelabel="Fast pulse")
+                                window_width=50, trial_subset=None, linecolor="blue", linelabel="Fast pulse")
     fig, ax = align_pulse_w_model_output(fig=fig, ax=ax, pulse_loc_list=slow_pulse_loc, model_output=model_output,
                                          intermediate_pulse_loc=intermediate_pulse_loc, exclude_close_pulse=False,
-                                window_width=50, trial_subset=1000, linecolor="orange", linelabel="Slow pulse")
+                                window_width=50, trial_subset=None, linecolor="orange", linelabel="Slow pulse")
     ax.grid()
     ax.legend()
-    figname = "posterior_response_aligned_both_pulse_intermediate_subtracted_window50_include_close_pulse"
+    figname = "posterior_response_aligned_both_pulse_intermediate_subtracted_window50_include_close_pulse" \
+        + mouse_model_info
     fig.set_size_inches(4, 4)
     fig.savefig(os.path.join(fig_folder, figname), dpi=300)
 
-
+    # Intermediate subtracted pulse response separated by early vs. late blocks
 
 
 if __name__ == "__main__":
-    main()
+    mouse_number_list = [75, 78, 79, 80, 81, 83]
+    time_shift_list = [6, 7, 9, 8, 7, 7]
+    for mouse_number, time_shift in zip(mouse_number_list, time_shift_list):
+        main(model_number=67, mouse_number=mouse_number, time_shift=time_shift)
