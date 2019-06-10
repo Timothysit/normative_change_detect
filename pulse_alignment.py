@@ -14,7 +14,7 @@ def find_pulses(exp_data, window_width=50):
     Find pulse locations from the signals.
     Fast pulse: 1.5 standard deviations above the mean temporal frequency (during baseline period)
     Slow pulse: 1.5 standard deviations below the mean temporal frequency (during baseline period)
-
+    Intermediate pulse:
     :param signal_matrix:
     :return:
     """
@@ -26,12 +26,13 @@ def find_pulses(exp_data, window_width=50):
 
     signal_baseline = 0
     baseline_std = 0.25
-    fast_pulse_threshold = signal_baseline + (baseline_std * 0.5)
-    slow_pulse_threshold = signal_baseline - (baseline_std * 0.5)
+    fast_slow_pulse_multiplier = 1.5
+    fast_pulse_threshold = signal_baseline + (baseline_std * fast_slow_pulse_multiplier)
+    slow_pulse_threshold = signal_baseline - (baseline_std * fast_slow_pulse_multiplier)
 
     # Reference pulse criteria
     reference_pulse_loc = list()
-    reference_pulse_std_multiplier = 1.5
+    reference_pulse_std_multiplier = 0.5
     reference_pulse_low_bound = signal_baseline - (baseline_std * reference_pulse_std_multiplier)
     reference_pulse_up_bound = signal_baseline + (baseline_std * reference_pulse_std_multiplier)
 
@@ -46,7 +47,8 @@ def find_pulses(exp_data, window_width=50):
         trial_signal = signals[trial][0][0]
         change_time = exp_data["change"].flatten()[trial]
         trial_baseline_signal = trial_signal[:change_time-1]  # convert to 0-indexing!
-        # trial_baseline_signal = trial_signal[:change_time - 1 - int(window_width/2)]
+        # trial_baseline_signal = trial_signal[:change_time - 1 - int(window_width/2)]  # remove pulse which overlap
+        # with change time
         fast_pulse_loc.append(np.where(trial_baseline_signal >= fast_pulse_threshold)[0])
         slow_pulse_loc.append(np.where(trial_baseline_signal <= slow_pulse_threshold)[0])
         reference_pulse_loc.append(np.where((trial_baseline_signal >= reference_pulse_low_bound) &
@@ -189,19 +191,39 @@ def main(model_number=70, mouse_number=75, time_shift=7):
     slow_pulse_loc, fast_pulse_loc, intermediate_pulse_loc = find_pulses(exp_data, window_width=50)
 
     # plot pulse speed distribution just to double check
-    figname = "pulse_speed_distribution" + mouse_model_info
+    figname = "pulse_speed_distribution" + mouse_model_info + "_first_1000"
     nmt.set_style()
-    fig, ax = plt.subplots(figsize=(4, 4))
-    fig, ax = nmt.plot_pulse_speed_distribution(fig, ax, fast_pulse_loc=fast_pulse_loc, slow_pulse_loc=slow_pulse_loc,
-                                                exp_data=exp_data, color=["blue", "orange"])
+    fig, ax = plt.subplots(figsize=(6, 4))
+    fig, ax = nmt.plot_pulse_speed_distribution(fig, ax, fast_pulse_loc=fast_pulse_loc[:1000],
+                                                slow_pulse_loc=slow_pulse_loc[:1000],
+                                                exp_data=exp_data, color=["blue", "orange"],
+                                                plot_mean=True, plotrug=True)
+    ax.set_xlim([-0.8, 0.8])
     fig.savefig(os.path.join(fig_folder, figname), dpi=300)
 
-    # plot pulse time distribution
-    figname = "pulse_time_distribution" + mouse_model_info
-    fig, ax = plt.subplots(figsize=(4, 4))
-    fig, ax = nmt.plot_pulse_time(fig, ax, fast_pulse_loc=fast_pulse_loc, slow_pulse_loc=slow_pulse_loc,
-                              color=["blue", "orange"])
+
+    # plot pulse speed distribution of the intermediate pulse
+    figname = "intermediate_pulse_speed_distribution_" + mouse_model_info + "_first_1000"
+    nmt.set_style()
+    fig, ax = plt.subplots(figsize=(6, 4))
+    fig, ax = nmt.plot_pulse_speed_distribution(fig, ax,
+                                                intermediate_pulse_loc=intermediate_pulse_loc[:1000],
+                                                exp_data=exp_data, color=["gray"],
+                                                plot_mean=True, plotrug=True)
+    ax.set_xlim([-0.8, 0.8])
     fig.savefig(os.path.join(fig_folder, figname), dpi=300)
+
+
+    # plot pulse time distribution
+    figname = "pulse_time_distribution" + mouse_model_info + "_first_1000"
+    fig, ax = plt.subplots(figsize=(4, 4))
+    fig, ax = nmt.plot_pulse_time(fig, ax, fast_pulse_loc=fast_pulse_loc[:1000],
+                                  slow_pulse_loc=slow_pulse_loc[:1000],
+                              color=["blue", "orange"])
+    ax.set_xlim([0, 350])
+    fig.savefig(os.path.join(fig_folder, figname), dpi=300)
+
+
 
     model_posterior_save_path = os.path.join(main_folder, "hmm_data", "model_posterior_mouse_"
                                              + str(mouse_number) + "_model_" + str(model_number) + ".pkl")
@@ -220,6 +242,7 @@ def main(model_number=70, mouse_number=75, time_shift=7):
     figname = "posterior_response_distribution" + mouse_model_info
     fig.savefig(os.path.join(fig_folder, figname), dpi=300)
 
+    """
     # Plot posterior / model output aligned to pulse
     fig, ax = align_pulse_w_model_output(pulse_loc_list=fast_pulse_loc, model_output=model_output,
                                 window_width=50, trial_subset=1000, linecolor="blue")
@@ -244,6 +267,7 @@ def main(model_number=70, mouse_number=75, time_shift=7):
     fig.savefig(os.path.join(fig_folder, figname), dpi=300)
 
     # Intermediate subtracted
+    """
 
     # Both fast and slow on the same plot
 
@@ -256,7 +280,7 @@ def main(model_number=70, mouse_number=75, time_shift=7):
                                 window_width=50, trial_subset=None, linecolor="orange", linelabel="Slow pulse")
     ax.grid()
     ax.legend()
-    figname = "posterior_response_aligned_both_pulse_intermediate_subtracted_window50_include_close_pulse" \
+    figname = "posterior_response_aligned_both_pulse1p5_intermediate0p5_subtracted_window50_include_close_pulse_all_" \
         + mouse_model_info
     fig.set_size_inches(4, 4)
     fig.savefig(os.path.join(fig_folder, figname), dpi=300)
