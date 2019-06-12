@@ -22,6 +22,8 @@ import pickle as pkl
 import pandas as pd
 from os.path import expanduser
 
+# smoothing (hazard rate regularisation)
+import smoothing
 
 from scipy.signal import savgol_filter
 
@@ -774,6 +776,11 @@ def loss_function_batch(param_vals, batch):
     # barrier_loss = - c * np.sum(np.log(param_vals[num_non_hazard_rate_params:])) - c * np.sum(np.log(1 - param_vals[num_non_hazard_rate_params:]))
     # batch_loss = batch_loss + barrier_loss
     # print("Barrier loss: ", str(barrier_loss))
+
+    # smoothing penalty for hazard rate
+    batch_loss = batch_loss + smoothing.second_derivative_penalty(param_vals[num_non_hazard_rate_params:],
+                                                                  lambda_weight=10)
+
 
     return batch_loss
 
@@ -1713,7 +1720,7 @@ def gradient_descent_w_cv(exp_data_path, training_savepath, init_param_vals=np.a
                                    time_shift_list=np.arange(0, 5), num_epoch=10, fit_hazard_rate=True,
                                    cv_random_seed=None,
                                    n_params=2, batch_size=None,
-                          fitted_params=None):
+                                   fitted_params=None, patience_threshold=2):
     """
     Runs gradient descent to optimise parameters of the HMM to fit behavioural results with cross validation.
     :param exp_data_path: path to file containing the experimental data
@@ -1769,8 +1776,8 @@ def gradient_descent_w_cv(exp_data_path, training_savepath, init_param_vals=np.a
         _, transition_matrix_list = get_hazard_rate(hazard_rate_type="experimental", datapath=exp_data_path)
 
     # for cases where the cumulative lick is used
-    global batched_cumulative_lick
-    batched_cumulative_lick = vmap(predict_cumulative_lick, in_axes=(None, 0))
+    # global batched_cumulative_lick
+    # batched_cumulative_lick = vmap(predict_cumulative_lick, in_axes=(None, 0))
 
     # prediction_matrix = batched_predict_lick(init_param_vals, signal_matrix)  # for debugging only
 
@@ -1832,6 +1839,9 @@ def gradient_descent_w_cv(exp_data_path, training_savepath, init_param_vals=np.a
     for time_shift in tqdm(time_shift_list):
         print("Time shift: ", str(time_shift))
 
+        # Initialise patience counter to track when to perform early stop
+        patience_counter = 0
+
         # Minibatch gradient descent
         if batch_size is not None:
             num_train = onp.shape(signal_matrix_train)[0]
@@ -1863,7 +1873,7 @@ def gradient_descent_w_cv(exp_data_path, training_savepath, init_param_vals=np.a
                     opt_state = step(epoch, opt_state, next(batches))
                     # print("Parameters:", opt_state[0][0:6])
             else:
-                opt_state = step(epoch, opt_state, (signal_matrix_train, lick_matrix_train))
+                opt_state = step(epoch, opt_staloss_function_batchte, (signal_matrix_train, lick_matrix_train))
 
             if epoch % 10 == 0:
                 params = optimizers.get_params(opt_state)
@@ -1880,7 +1890,16 @@ def gradient_descent_w_cv(exp_data_path, training_savepath, init_param_vals=np.a
 
                 time_shift_store.append(time_shift)
 
-                # TODO: Write function to auto-stop based on CV loss
+                # Early stopping based on validation loss
+                if len(val_loss_list) >= 2:
+                    stop = early_stop(old_loss=val_loss_list[-2], new_loss=val_loss_list[-1],
+                                      alpha=0.001)
+                    patience_counter += stop
+                if patience_counter >= patience_threshold:
+                    test_loss = loss_function_batch(params, (signal_matrix_test, lick_matrix_test))
+                    print("Test loss: " + str(test_loss))
+                    test_loss_list.append(test_loss)
+                    break
 
             # get test loss at the end of training (note the 0-indexing)
             if epoch == (num_epoch-1):
@@ -1972,7 +1991,8 @@ def predict_lick_w_hazard_rate(param_vals, signal):
     # posterior = forward_inference_w_tricks(signal.flatten())
     global transition_matrix_list
     hazard_rate_params = param_vals[num_non_hazard_rate_params:]
-    backward_prob_vec = np.repeat(param_vals[2], np.shape(hazard_rate_params)[0])  # use 1 if not tuning this.
+    # backward_prob_vec = np.repeat(param_vals[2], np.shape(hazard_rate_params)[0])
+    backward_prob_vec = np.repeat(0.0, np.shape(hazard_rate_params)[0])  # use 0 by default
     transition_matrix_list = make_transition_matrix(hazard_rate_vec=hazard_rate_params,
                                                     backward_prob_vec=backward_prob_vec)
 
@@ -1987,7 +2007,7 @@ def predict_lick_w_hazard_rate(param_vals, signal):
     # add noise to the signal
     # key = random.PRNGKey(777)
     # signal = signal.flatten() + (random.normal(key, (len(signal.flatten()), )) * nonstandard_sigmoid(param_vals[2],
-    #                                                                                 min_val=0.0, max_val=1.0))
+    #                                                                                  min_val=0.0, max_val=1.0))
     # multiply standard normal by constant: aX + b = N(au + b, a^2\sigma^2)
     posterior = forward_inference_custom_transition_matrix(signal)
 
@@ -2142,7 +2162,7 @@ def main(model_number=99, exp_data_number=83, run_test_foward_algorithm=False, r
          run_model=False, run_plot_time_shift_test=False, run_plot_hazard_rate=False, run_plot_trained_hazard_rate=False,
          run_benchmark_model=False, run_plot_time_shift_training_result=False, run_plot_posterior=False, run_control_model=False,
          run_plot_signal=False, run_plot_trained_posterior=False, run_plot_trained_sigmoid=False, run_plot_time_shift_cost=False,
-         run_plot_change_times=False, run_get_model_posterior=False):
+         run_plot_change_times=False, run_get_model_posterior=False, run_plot_early_stop=False, find_best_time_shift=False):
     home = expanduser("~")
     print("Running model: ", str(model_number))
     print("Using mouse: ", str(exp_data_number))
@@ -2204,8 +2224,8 @@ def main(model_number=99, exp_data_number=83, run_test_foward_algorithm=False, r
                               time_shift_list=np.arange(0, 11), num_epoch=500, batch_size=512,
                               # fitted_params=["sigmoid_k", "sigmoid_midpoint", "stimulus_var",
                               #                "true_negative", "false_negative", "false_positive",
-                              #                "hazard_rate"]
-                              fitted_params=["sigmoid_k", "sigmoid_midpoint", "backward_prob", "hazard_rate"]
+                              #                "hazard_rate", "backward_prob"]
+                              fitted_params=["sigmoid_k", "sigmoid_midpoint", "smoothed_hazard_rate"]
                               )
 
 
@@ -2383,12 +2403,53 @@ def main(model_number=99, exp_data_number=83, run_test_foward_algorithm=False, r
         with open(model_posterior_save_path, "wb") as handle:
             pkl.dump(posterior, handle)
 
+    if run_plot_early_stop is True:
+
+        with open(training_savepath, "rb") as handle:
+            training_result = pkl.load(handle)
+
+        fig, ax = plt.subplots()
+        num_time_shift = 11
+        num_epoch = len(training_result["val_loss"]) / num_time_shift
+        nmt_plot.plot_early_stopping(ax, validation_loss=onp.hstack(training_result["val_loss"][0:50]),
+                                     stopping_criteria_func=early_stop)
+
+    if find_best_time_shift is True:
+        with open(training_savepath, "rb") as handle:
+            training_result = pkl.load(handle)
+        # TODO: Still needs to be tested.
+        min_val_loss_index = onp.where(training_result["val_loss"] == min(training_result["val_loss"]))[0]
+        best_time_shift = training_result["time_shift"][min_val_loss_index]
+        print("Time shift with minimal validation loss:", str(best_time_shift))
+
+
+def test_early_stop(validation_loss, alpha=0.001):
+
+    stop_list = list()
+    for epoch in np.arange(1, len(validation_loss)):
+        stop = early_stop(validation_loss[epoch-1], validation_loss[epoch], alpha=alpha)
+        stop_list.append(stop)
+
+    return stop_list
+
+
 def early_stop(old_loss, new_loss, alpha=0.0001):
-    # TODO: to be added to the gradient descent function
-    if abs(old_loss - new_loss) < alpha * abs(old_loss):
+    """
+    Compares loss in the current versus previous epoch, and determines whether gradient descent can be terminated.
+    By loss, this is usually the validation loss.
+    :param old_loss:
+    :param new_loss:
+    :param alpha:
+    :param patience: how many epochs of failing the criteria to stop gradient descent
+    :return:
+    """
+    if new_loss > old_loss:
+        stop = 1
+    elif abs(old_loss - new_loss) < alpha * abs(old_loss):
         stop = 1
     else:
         stop = 0
+
     return stop
 
 def test_rel_loss():
@@ -2397,13 +2458,14 @@ def test_rel_loss():
         rel_difference.append(abs(v_old - v_new) / abs(v_old))
 
 if __name__ == "__main__":
-    exp_data_number_list = [83]  # [75, 78, 79, 80, 81, 83]
+    exp_data_number_list = [75, 78, 79, 80, 81, 83]  # [75, 78, 79, 80, 81, 83]
     for exp_data_number in exp_data_number_list:
-        main(model_number=70, exp_data_number=exp_data_number, run_test_on_data=False, run_gradient_descent=False,
+        main(model_number=72, exp_data_number=exp_data_number, run_test_on_data=False, run_gradient_descent=True,
              run_plot_training_loss=False, run_plot_sigmoid=False, run_plot_time_shift_cost=False,
-             run_plot_test_loss=False, run_model=True, run_plot_time_shift_test=False,
+             run_plot_test_loss=False, run_model=False, run_plot_time_shift_test=False,
              run_plot_hazard_rate=False, run_plot_trained_hazard_rate=False, run_benchmark_model=False,
              run_plot_time_shift_training_result=False, run_plot_posterior=False, run_control_model=False,
              run_plot_signal=False, run_plot_trained_posterior=False, run_plot_trained_sigmoid=False,
-             run_plot_change_times=False, run_get_model_posterior=False)
+             run_plot_change_times=False, run_get_model_posterior=False, run_plot_early_stop=False,
+             find_best_time_shift=False)
 
