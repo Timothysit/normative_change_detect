@@ -13,11 +13,27 @@ def second_derivative_penalty(x, lambda_weight=1):
     """
 
     # TODO: JAX numpy does not have gradient yet, may need to write that myself...
-    x_prime = onp.gradient(x)
-    x_pprime = onp.gradient(x_prime)
+    # x_prime = onp.gradient(x)
+    # x_pprime = onp.gradient(x_prime)
+
+    # pure pure numpy method
+    x_pprime_list = list()
+    h = 1  # "step size" when approximating the gradient
+    x_first_val_pprime = (x[2] - 2 * x[1] + x[0]) / (h**2)   # forward method for the first datapoint
+    x_last_val_pprime = (x[-1] - 2 * x[-2] + x[-3]) / (h**2)  # backward method for the last datapoint
+
+    x_pprime_list.append(x_first_val_pprime)
+    x_pprime_list.append(x_last_val_pprime)
+
+    for x_ind in range(1, len(x)-1):
+        x_pprime = (x[x_ind + 1] - 2 * x[x_ind] + x[x_ind-1]) / (h**2)  # central difference method
+        x_pprime_list.append(x_pprime)
 
 
     return lambda_weight * np.sum(x_pprime ** 2)
+
+
+
 
 
 def test_penalty_func(penalty_func, scale_list=[0.1, 1, 2]):
