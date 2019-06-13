@@ -779,7 +779,7 @@ def loss_function_batch(param_vals, batch):
 
     # smoothing penalty for hazard rate
     batch_loss = batch_loss + smoothing.second_derivative_penalty(param_vals[num_non_hazard_rate_params:],
-                                                                  lambda_weight=10)
+                                                                  lambda_weight=20)
 
 
     return batch_loss
@@ -924,7 +924,7 @@ def run_through_dataset_fit_vector(datapath, savepath, training_savepath, param=
     """
 
     global time_shift
-    time_shift = 7
+    time_shift = 8
 
     if param is None:
         # if no parameters specified, then load the training result and get the last param
@@ -2007,7 +2007,7 @@ def predict_lick_w_hazard_rate(param_vals, signal):
     # add noise to the signal
     # key = random.PRNGKey(777)
     # signal = signal.flatten() + (random.normal(key, (len(signal.flatten()), )) * nonstandard_sigmoid(param_vals[2],
-    #                                                                                  min_val=0.0, max_val=1.0))
+    #                                                                                   min_val=0.0, max_val=1.0))
     # multiply standard normal by constant: aX + b = N(au + b, a^2\sigma^2)
     posterior = forward_inference_custom_transition_matrix(signal)
 
@@ -2157,6 +2157,40 @@ def get_model_posterior(exp_data, training_result, num_non_hazard_rate_params=2)
 
     return posterior, hazard_rate
 
+def test_early_stop(validation_loss, alpha=0.001):
+
+    stop_list = list()
+    for epoch in np.arange(1, len(validation_loss)):
+        stop = early_stop(validation_loss[epoch-1], validation_loss[epoch], alpha=alpha)
+        stop_list.append(stop)
+
+    return stop_list
+
+
+def early_stop(old_loss, new_loss, alpha=0.0001):
+    """
+    Compares loss in the current versus previous epoch, and determines whether gradient descent can be terminated.
+    By loss, this is usually the validation loss.
+    :param old_loss:
+    :param new_loss:
+    :param alpha:
+    :param patience: how many epochs of failing the criteria to stop gradient descent
+    :return:
+    """
+    if new_loss > old_loss:
+        stop = 1
+    elif abs(old_loss - new_loss) < alpha * abs(old_loss):
+        stop = 1
+    else:
+        stop = 0
+
+    return stop
+
+def test_rel_loss():
+    rel_difference = list()
+    for v_old, v_new in zip(val_loss[0:48], val_loss[1:49]):
+        rel_difference.append(abs(v_old - v_new) / abs(v_old))
+
 def main(model_number=99, exp_data_number=83, run_test_foward_algorithm=False, run_test_on_data=False, run_gradient_descent=False,
          run_plot_training_loss=False, run_plot_sigmoid=False, run_plot_test_loss=False,
          run_model=False, run_plot_time_shift_test=False, run_plot_hazard_rate=False, run_plot_trained_hazard_rate=False,
@@ -2199,7 +2233,7 @@ def main(model_number=99, exp_data_number=83, run_test_foward_algorithm=False, r
                                        + str(model_number))
         run_through_dataset_fit_vector(datapath=datapath, savepath=model_save_path, training_savepath=training_savepath,
                                        num_non_hazard_rate_param=3, fit_hazard_rate=True,
-                                       cv=True, param=None, t_shift=7)
+                                       cv=True, param=None, t_shift=8)
 
     if run_control_model is True:
         control_model(datapath=datapath, savepath=model_save_path, training_savepath=training_savepath,
@@ -2418,49 +2452,15 @@ def main(model_number=99, exp_data_number=83, run_test_foward_algorithm=False, r
         with open(training_savepath, "rb") as handle:
             training_result = pkl.load(handle)
         # TODO: Still needs to be tested.
-        min_val_loss_index = onp.where(training_result["val_loss"] == min(training_result["val_loss"]))[0]
+        min_val_loss_index = onp.where(training_result["val_loss"] == min(training_result["val_loss"]))[0][0]
         best_time_shift = training_result["time_shift"][min_val_loss_index]
         print("Time shift with minimal validation loss:", str(best_time_shift))
 
 
-def test_early_stop(validation_loss, alpha=0.001):
-
-    stop_list = list()
-    for epoch in np.arange(1, len(validation_loss)):
-        stop = early_stop(validation_loss[epoch-1], validation_loss[epoch], alpha=alpha)
-        stop_list.append(stop)
-
-    return stop_list
-
-
-def early_stop(old_loss, new_loss, alpha=0.0001):
-    """
-    Compares loss in the current versus previous epoch, and determines whether gradient descent can be terminated.
-    By loss, this is usually the validation loss.
-    :param old_loss:
-    :param new_loss:
-    :param alpha:
-    :param patience: how many epochs of failing the criteria to stop gradient descent
-    :return:
-    """
-    if new_loss > old_loss:
-        stop = 1
-    elif abs(old_loss - new_loss) < alpha * abs(old_loss):
-        stop = 1
-    else:
-        stop = 0
-
-    return stop
-
-def test_rel_loss():
-    rel_difference = list()
-    for v_old, v_new in zip(val_loss[0:48], val_loss[1:49]):
-        rel_difference.append(abs(v_old - v_new) / abs(v_old))
-
 if __name__ == "__main__":
     exp_data_number_list = [75, 78, 79, 80, 81, 83]  # [75, 78, 79, 80, 81, 83]
     for exp_data_number in exp_data_number_list:
-        main(model_number=72, exp_data_number=exp_data_number, run_test_on_data=False, run_gradient_descent=True,
+        main(model_number=73, exp_data_number=exp_data_number, run_test_on_data=False, run_gradient_descent=True,
              run_plot_training_loss=False, run_plot_sigmoid=False, run_plot_time_shift_cost=False,
              run_plot_test_loss=False, run_model=False, run_plot_time_shift_test=False,
              run_plot_hazard_rate=False, run_plot_trained_hazard_rate=False, run_benchmark_model=False,
