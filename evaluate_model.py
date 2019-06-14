@@ -256,10 +256,12 @@ def eval_model(mouse_df_path, model_df_folder_path, model_number_list=[36, 100],
     return model_comparison_df
 
 def eval_model_across_mice(model_df_folder_path, mouse_df_folder_path,
-                           mouse_number_list=[75, 78, 79, 80, 81, 83], model_number_list=[68, 67],
+                           mouse_number_list=[75, 78, 79, 80, 81, 83],
+                           model_number_list=[68, 67],
                            time_shift_array=[[6, 6], [6, 7], [9, 9], [8, 8], [7, 7], [7, 7]]):
     """
-
+    Takes in list of models, and return model comparison statistics.
+    (Normally called by normative_hmm_main.py)
     :param model_df_folder_path:
     :param mouse_df_folder_path:
     :param mouse_number_list:
@@ -273,6 +275,7 @@ def eval_model_across_mice(model_df_folder_path, mouse_df_folder_path,
     model_comparison_df_list = list()
     for mouse_number, time_shift_list in zip(mouse_number_list, time_shift_array):
         mouse_df_path = os.path.join(mouse_df_folder_path, "mouse_" + str(mouse_number) + "_df.pkl")
+        print(mouse_df_path)
         model_comparison_df = eval_model(mouse_df_path, model_df_folder_path,
                                          model_number_list=model_number_list, mouse_number=mouse_number,
                                          time_shift_list=time_shift_list)
