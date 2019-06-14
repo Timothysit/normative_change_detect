@@ -924,7 +924,7 @@ def run_through_dataset_fit_vector(datapath, savepath, training_savepath, param=
     """
 
     global time_shift
-    time_shift = 8
+    time_shift = 10
 
     if param is None:
         # if no parameters specified, then load the training result and get the last param
@@ -1380,6 +1380,10 @@ def get_hazard_rate(hazard_rate_type="subjective", datapath=None, plot_hazard_ra
                                          experimental_hazard_rate)  # remove divide by zero Inf/NaN
     experimental_hazard_rate = onp.where(experimental_hazard_rate > 1, 1,
                                          experimental_hazard_rate)
+
+    # log implementation of the hazard rate
+    # log_experimenetal_hazard_rate = np.log(hazard_rate_hist) - np.log(1 - hazard_rate_cumsum)
+    # experimental_hazard_rate = log_experimenetal_hazard_rate # np.exp(log_experimenetal_hazard_rate)
 
 
     if hazard_rate_type == "subjective":
@@ -2204,7 +2208,8 @@ def main(model_number=99, exp_data_number=83, run_test_foward_algorithm=False, r
     # datapath = "/media/timothysit/180C-2DDD/second_rotation_project/exp_data/subsetted_data/data_IO_083.pkl"
     main_folder = os.path.join(home, "Dropbox/notes/Projects/second_rotation_project/normative_model")
     # TODO: generalise the code below
-    datapath = os.path.join(main_folder, "exp_data/subsetted_data/data_IO_0" + str(exp_data_number) + ".pkl")
+    datapath = os.path.join(main_folder, "exp_data/subsetted_data/data_IO_0" + str(exp_data_number) + "_early_blocks" ".pkl")
+    # datapath = os.path.join(main_folder, "exp_data/subsetted_data/data_IO_0" + str(exp_data_number) + ".pkl")
     model_save_path = os.path.join(main_folder, "hmm_data/model_response_0" + str(exp_data_number) + "_"
                                    + str(model_number) + ".pkl")
     fig_save_path = os.path.join(main_folder, "figures/model_response_0" + str(exp_data_number) + "_"
@@ -2233,7 +2238,7 @@ def main(model_number=99, exp_data_number=83, run_test_foward_algorithm=False, r
                                        + str(model_number))
         run_through_dataset_fit_vector(datapath=datapath, savepath=model_save_path, training_savepath=training_savepath,
                                        num_non_hazard_rate_param=3, fit_hazard_rate=True,
-                                       cv=True, param=None, t_shift=8)
+                                       cv=True, param=None, t_shift=10)
 
     if run_control_model is True:
         control_model(datapath=datapath, savepath=model_save_path, training_savepath=training_savepath,
@@ -2363,13 +2368,16 @@ def main(model_number=99, exp_data_number=83, run_test_foward_algorithm=False, r
             nmt_plot.plot_time_shift_test(datapath, param=[10, 0.5], time_shift_list=[0, -10], trial_num=trial_num)
 
     if run_plot_hazard_rate is True:
-        figsavepath = os.path.join(main_folder, "figures/hazard_rate_subjective_mouse_" + str(exp_data_number) + ".png")
+        figsavepath = os.path.join(main_folder, "figures/hazard_rate_subjective_mouse_early_block" + str(exp_data_number) + ".png")
         # get_hazard_rate(hazard_rate_type="subjective", datapath=datapath, plot_hazard_rate=True,
         #                  figsavepath=figsavepath)
 
         mouse_hazard_rate, _ = get_hazard_rate(hazard_rate_type="experimental", datapath=datapath,
-                                               plot_hazard_rate=False,
+                                               plot_hazard_rate=True,
                         figsavepath=figsavepath)
+
+
+
 
         # model_hazard_rate = get_trained_hazard_rate(training_savepath, num_non_hazard_rate_param=6,
         #                                             epoch_num=348, param_process_method="sigmoid")
@@ -2460,7 +2468,7 @@ def main(model_number=99, exp_data_number=83, run_test_foward_algorithm=False, r
 if __name__ == "__main__":
     exp_data_number_list = [75, 78, 79, 80, 81, 83]  # [75, 78, 79, 80, 81, 83]
     for exp_data_number in exp_data_number_list:
-        main(model_number=73, exp_data_number=exp_data_number, run_test_on_data=False, run_gradient_descent=True,
+        main(model_number=74, exp_data_number=exp_data_number, run_test_on_data=False, run_gradient_descent=True,
              run_plot_training_loss=False, run_plot_sigmoid=False, run_plot_time_shift_cost=False,
              run_plot_test_loss=False, run_model=False, run_plot_time_shift_test=False,
              run_plot_hazard_rate=False, run_plot_trained_hazard_rate=False, run_benchmark_model=False,
