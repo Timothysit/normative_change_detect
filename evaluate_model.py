@@ -10,6 +10,10 @@ import numpy as np
 import scipy.stats as spstats
 import sklearn.metrics
 
+# Storing things
+from collections import defaultdict  # intialise dict of lists
+
+from tqdm import tqdm # Loading bar
 
 def compare_psychometric_fit(mouse_psychometric, model_psychometric, method="mse"):
     """
@@ -35,6 +39,7 @@ def compare_dist_fit(mouse_dist, model_dist, method="ks_continuous"):
         ks_stat, ks_p_value = spstats.ks_2samp(mouse_dist, model_dist)
 
     return ks_stat, ks_p_value
+
 
 def get_psychometric_data(mouse_df, model_df, psychometric_type="hit_exclude_FA"):
 
@@ -155,7 +160,10 @@ def eval_model(mouse_df_path, model_df_folder_path, model_number_list=[36, 100],
     FA_rt_dist_score_list = list()
     hit_rt_dist_score_dict = dict()
     # TODO: compute median reaction time
-    median_rt_fit_score_list = list()
+    psychometric_df_list = list()
+    chronometric_df_list = list()
+
+    rt_output_dict = defaultdict(list)
 
     change_magnitude_list = [1.00, 1.25, 1.35, 1.5, 2.0, 4.0]
     for change_magnitude in change_magnitude_list:
@@ -198,9 +206,17 @@ def eval_model(mouse_df_path, model_df_folder_path, model_number_list=[36, 100],
                                  "_time_shift_" + str(time_shift) + ".pkl"
         model_df = pd.read_pickle(os.path.join(model_df_folder_path, simulated_results_file))
 
+
         # Calculate error on fitting psychometric curve
         model_and_mouse_psychometric_df = get_psychometric_data(mouse_df, model_df,
                                                                 psychometric_type="hit_exclude_FA")
+
+        # add mouse number, model number, and time shift to the df (to be used for plotting)
+        model_and_mouse_psychometric_df["model_number"] = np.repeat(model_number, len(model_and_mouse_psychometric_df))
+        model_and_mouse_psychometric_df["mouse_number"] = np.repeat(mouse_number, len(model_and_mouse_psychometric_df))
+        model_and_mouse_psychometric_df["time_shift"] = np.repeat(time_shift, len(model_and_mouse_psychometric_df))
+        psychometric_df_list.append(model_and_mouse_psychometric_df)
+
         hit_exclude_FA_fit_score = compare_psychometric_fit(
                                     mouse_psychometric=model_and_mouse_psychometric_df["mouse_mean"],
                                     model_psychometric=model_and_mouse_psychometric_df["model_mean"])
@@ -214,10 +230,23 @@ def eval_model(mouse_df_path, model_df_folder_path, model_number_list=[36, 100],
                                     model_psychometric=model_and_mouse_psychometric_df["model_median"])
         hit_chronometric_fit_list.append(hit_chronometric_fit_score)
 
+        model_and_mouse_psychometric_df["model_number"] = np.repeat(model_number, len(model_and_mouse_psychometric_df))
+        model_and_mouse_psychometric_df["mouse_number"] = np.repeat(mouse_number, len(model_and_mouse_psychometric_df))
+        model_and_mouse_psychometric_df["time_shift"] = np.repeat(time_shift, len(model_and_mouse_psychometric_df))
+        chronometric_df_list.append(model_and_mouse_psychometric_df)
+
+
         # Calculate error on fitting reaction time
         mouse_rt_FA, model_rt_FA = get_reaction_time_data(mouse_df, model_df, outcome="FA",
                                                           rt_type="absolute_decision_time",
                            model_sub_sample=len(mouse_df))
+
+        # TODO: still need to initalise dictionary and make the entry lists.
+        rt_output_dict["mouse_number"].append(mouse_number)
+        rt_output_dict["model_number"].append(model_number)
+        rt_output_dict["time_shift"].append(time_shift)
+        rt_output_dict["mouse_rt_FA"].append(list(mouse_rt_FA))
+        rt_output_dict["model_rt_FA"].append(list(model_rt_FA))
 
         ks_stat_FA, ks_p_value_FA = compare_dist_fit(mouse_rt_FA, model_rt_FA, method="ks_continuous")
 
@@ -253,7 +282,14 @@ def eval_model(mouse_df_path, model_df_folder_path, model_number_list=[36, 100],
                                         "hit_rt_dist_fit_4": hit_rt_dist_score_dict[4.00]
                                         })
 
-    return model_comparison_df
+    multiple_model_output_dict = {"psychometric_df_list": psychometric_df_list,
+                                  "chronometric_df_list": chronometric_df_list,
+                                  "rt_output_dict": rt_output_dict
+                                  }
+
+    return model_comparison_df, multiple_model_output_dict
+
+
 
 def eval_model_across_mice(model_df_folder_path, mouse_df_folder_path,
                            mouse_number_list=[75, 78, 79, 80, 81, 83],
@@ -273,14 +309,17 @@ def eval_model_across_mice(model_df_folder_path, mouse_df_folder_path,
     """
 
     model_comparison_df_list = list()
-    for mouse_number, time_shift_list in zip(mouse_number_list, time_shift_array):
+    multiple_model_output_dict_store = dict()
+    for mouse_number, time_shift_list in tqdm(zip(mouse_number_list, time_shift_array)):
         mouse_df_path = os.path.join(mouse_df_folder_path, "mouse_" + str(mouse_number) + "_df.pkl")
-        print(mouse_df_path)
-        model_comparison_df = eval_model(mouse_df_path, model_df_folder_path,
+        # print(mouse_df_path)
+        model_comparison_df, multiple_model_output_dict = eval_model(mouse_df_path, model_df_folder_path,
                                          model_number_list=model_number_list, mouse_number=mouse_number,
                                          time_shift_list=time_shift_list)
         model_comparison_df_list.append(model_comparison_df)
+        multiple_model_output_dict_store["mouse_" + str(mouse_number)] = multiple_model_output_dict
 
     mouse_model_comparison_df = pd.concat(model_comparison_df_list)
 
-    return mouse_model_comparison_df
+
+    return mouse_model_comparison_df, multiple_model_output_dict_store

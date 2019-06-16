@@ -5,6 +5,7 @@ import matplotlib.pyplot as plt
 import os
 import pickle as pkl
 import numpy as np
+import pandas as pd
 
 """
 time_shift_array=[[6, 6, 6, 6, 7, 7],
@@ -18,14 +19,20 @@ time_shift_array=[[6, 6, 6, 6, 7, 7],
 
 def run_model_comparison(model_data_folder, main_folder, model_number_list, mouse_number_list,
                          model_comparison_df_savepath,
-                         time_shift_array):
-    model_comparison_df = ev_model.eval_model_across_mice(model_df_folder_path=model_data_folder,
+                         time_shift_array, multiple_model_output_dict_savepath=None):
+    model_comparison_df, multiple_model_output_dict_list = ev_model.eval_model_across_mice(
+                                                          model_df_folder_path=model_data_folder,
                                                           mouse_df_folder_path=main_folder,
                                                           model_number_list=model_number_list,
                                                           time_shift_array=time_shift_array
                                                           )
     with open(model_comparison_df_savepath, "wb") as handle:
         pkl.dump(model_comparison_df, handle)
+
+    if multiple_model_output_dict_savepath is not None:
+        with open(multiple_model_output_dict_savepath, "wb") as handle:
+            pkl.dump(multiple_model_output_dict_list, handle)
+
 
 
 def main(model_number_list=[63, 64], model_names=["model A", "model B"],
@@ -70,12 +77,15 @@ def main(model_number_list=[63, 64], model_names=["model A", "model B"],
     # model comparison
     model_comparison_df_savepath = os.path.join(main_folder, "hmm_data", "model_comparison_" +
                                                 "_".join(str(x) for x in model_number_list) + ".pkl")
+    multiple_model_output_dict_savepath = os.path.join(main_folder, "hmm_data", "multiple_model_output_" +
+                                                "_".join(str(x) for x in model_number_list) + ".pkl")
     if not os.path.exists(model_comparison_df_savepath):  # only run if the file does not exist
         run_model_comparison(model_data_folder=model_data_folder, main_folder=main_folder,
                              model_number_list=model_number_list,
                              model_comparison_df_savepath=model_comparison_df_savepath,
                              mouse_number_list=mouse_number_list,
-                             time_shift_array=time_shift_array)
+                             time_shift_array=time_shift_array,
+                             multiple_model_output_dict_savepath=multiple_model_output_dict_savepath)
 
     with open(model_comparison_df_savepath, "rb") as handle:
         model_comparison_df = pkl.load(handle)
@@ -114,15 +124,57 @@ def main(model_number_list=[63, 64], model_names=["model A", "model B"],
         fig.savefig(figsavepath)
 
 
+    # Plot psychometric plot comparison across models
+    with open(multiple_model_output_dict_savepath, "rb") as handle:
+        multiple_model_output_dict = pkl.load(handle)
+
+    for mouse_number in mouse_number_list:
+        figsavepath = os.path.join(fig_folder_path, "multiple_psychometric" +
+                                   "_mouse_" + str(mouse_number) + "_model_" +
+                                           "_".join([str(x) for x in model_number_list]))
+        fig, ax = plt.subplots(figsize=(4, 4))
+
+        psychometric_df = pd.concat(multiple_model_output_dict["mouse_" + str(mouse_number)]["psychometric_df_list"],
+                                    ignore_index=True)
+        fig, ax = nmt_plot.plot_multiple_model_psychometric(fig=fig, ax=ax, mouse_number=mouse_number,
+                                                            model_psychometric_df=psychometric_df)
+        ax.grid()
+        fig.savefig(figsavepath)
+
+        # Plot reaction time distribution across models
+        figsavepath = os.path.join(fig_folder_path, "multiple_FA_rt" +
+                                   "_mouse_" + str(mouse_number) + "_model_"
+                                   "_".join([str(x) for x in model_number_list]))
+        reaction_time_distribution_dict = multiple_model_output_dict["mouse_" + str(mouse_number)]["rt_output_dict"]
+        fig, ax = plt.subplots(figsize=(6, 4))
+        fig, ax = nmt_plot.plot_multiple_model_rt_kde(fig, ax, reaction_time_distribution_dict)
+        fig.savefig(figsavepath)
+
+        # TODO: plot reaction time for changes
+
+
 if __name__ == "__main__":
-    main(model_number_list=[68, 69, 67, 70, 71, 72],
-         model_names=['1', '2', '3', '4', '5', '6'],
-         time_shift_array=[[6, 6, 6, 6, 7, 7],
-                           [6, 7, 7, 8, 9, 8],
-                           [9, 8, 9, 9, 10, 10],
-                           [8, 6, 8, 8, 8, 8],
-                           [7, 6, 7, 8, 8, 8],
-                           [7, 6, 7, 7, 7, 7]],
+    # main(model_number_list=[68, 69, 67, 70, 71, 72],
+    #      model_names=['1', '2', '3', '4', '5', '6'],
+    #      time_shift_array=[[6, 6, 6, 6, 7, 7],
+    #                        [6, 7, 7, 8, 9, 8],
+    #                        [9, 8, 9, 9, 10, 10],
+    #                        [8, 6, 8, 8, 8, 8],
+    #                        [7, 6, 7, 8, 8, 8],
+    #                        [7, 6, 7, 7, 7, 7]],
+    #
+    #      mouse_number_list=[75, 78, 79, 80, 81, 83],
+    #      filecheck=False,
+    #      )
+
+    main(model_number_list=[68, 69, 67],
+         model_names=["Constant \n hazard rate", "Experiment \n hazard rate", "Varying \n hazard rate"],
+         time_shift_array=[[6, 6, 6],
+                           [6, 7, 7],
+                           [9, 8, 9],
+                           [8, 6, 8],
+                           [7, 6, 7],
+                           [7, 6, 7]],
          mouse_number_list=[75, 78, 79, 80, 81, 83],
          filecheck=False,
          )
