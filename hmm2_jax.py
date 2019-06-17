@@ -924,7 +924,7 @@ def run_through_dataset_fit_vector(datapath, savepath, training_savepath, param=
     """
 
     global time_shift
-    time_shift = 10
+    time_shift = 9
 
     if param is None:
         # if no parameters specified, then load the training result and get the last param
@@ -1808,12 +1808,16 @@ def gradient_descent_w_cv(exp_data_path, training_savepath, init_param_vals=np.a
                                       'outcome': mouse_reaction})
     y = mouse_reaction_df["outcome"]
 
+    data_indices = np.arange(0, np.shape(y)[0])
+
     # y_train and y_test are just placeholders. This is only used to obtain the indices.
-    X_dev, X_test, y_dev, y_test = train_test_split(mouse_reaction_df, y, test_size=0.1,
-                                       random_state=cv_random_seed, stratify=y)
+    X_dev, X_test, y_dev, y_test, dev_indices, test_indices = train_test_split(mouse_reaction_df, y, data_indices,
+                                                                               test_size=0.1,
+                                                                              random_state=cv_random_seed, stratify=y)
 
     # further split validation set
-    X_train, X_val, y_train, y_val = train_test_split(X_dev, y_dev, test_size=0.1,
+    X_train, X_val, y_train, y_val, train_indices, val_indices = train_test_split(X_dev, y_dev, dev_indices,
+                                                                                test_size=0.1,
                                                       random_state=cv_random_seed, stratify=y_dev)
 
     signal_matrix_test = signal_matrix[X_test["trial"], :]
@@ -1823,6 +1827,9 @@ def gradient_descent_w_cv(exp_data_path, training_savepath, init_param_vals=np.a
     lick_matrix_test = lick_matrix[X_test["trial"], :]
     lick_matrix_val = lick_matrix[X_val["trial"], :]
     lick_matrix_train = lick_matrix[X_train["trial"], :]
+
+    # TODO: get index of train, val, and test set so we know which trials were used
+    # (This helps later plotting of fitting of test set)
 
     # For use when training a constant hazard rate
     global max_signal_length
@@ -1929,6 +1936,11 @@ def gradient_descent_w_cv(exp_data_path, training_savepath, init_param_vals=np.a
     training_result["mean_train_loss"] = np.array(train_loss_list) / len(y_train)
     training_result["mean_val_loss"] = np.array(val_loss_list) / len(y_val)
     training_result["mean_test_loss"] = np.array(test_loss_list) / len(y_test)
+
+    training_result["val_indices"] = val_indices
+    training_result["train_indices"] = train_indices
+    training_result["test_indices"] = test_indices
+    training_result["cv_random_seed"] = cv_random_seed
 
     if fitted_params is not None:
         training_result["fitted_params"] = fitted_params
@@ -2195,6 +2207,35 @@ def test_rel_loss():
     for v_old, v_new in zip(val_loss[0:48], val_loss[1:49]):
         rel_difference.append(abs(v_old - v_new) / abs(v_old))
 
+def get_train_val_test_set_indices(exp_data, random_seed):
+
+    # open exp data (actual data needed due to stratification process)
+    mouse_reaction = exp_data["outcome"].flatten()
+
+    le = LabelEncoder()
+    mouse_reaction = le.fit_transform(mouse_reaction.tolist())
+
+    mouse_reaction_df = pd.DataFrame({'trial': np.arange(0, len(mouse_reaction)),
+                                      'outcome': mouse_reaction})
+    y = mouse_reaction_df["outcome"]
+
+    data_indices = np.arange(0, np.shape(y)[0])
+
+    # y_train and y_test are just placeholders. This is only used to obtain the indices.
+    X_dev, X_test, y_dev, y_test, dev_set_indices, test_set_indices = train_test_split(
+                                                          mouse_reaction_df, y, data_indices, test_size=0.1,
+                                                          random_state=random_seed, stratify=y)
+
+    # further split validation set
+    X_train, X_val, y_train, y_val, train_set_indices, val_set_indices = train_test_split(
+        X_dev, y_dev, dev_set_indices,_test_size=0.1, random_state=cv_random_seed, stratify=y_dev)
+
+
+    return train_set_indices, val_set_indices, test_set_indices
+
+
+
+
 def main(model_number=99, exp_data_number=83, run_test_foward_algorithm=False, run_test_on_data=False, run_gradient_descent=False,
          run_plot_training_loss=False, run_plot_sigmoid=False, run_plot_test_loss=False,
          run_model=False, run_plot_time_shift_test=False, run_plot_hazard_rate=False, run_plot_trained_hazard_rate=False,
@@ -2208,7 +2249,7 @@ def main(model_number=99, exp_data_number=83, run_test_foward_algorithm=False, r
     # datapath = "/media/timothysit/180C-2DDD/second_rotation_project/exp_data/subsetted_data/data_IO_083.pkl"
     main_folder = os.path.join(home, "Dropbox/notes/Projects/second_rotation_project/normative_model")
     # TODO: generalise the code below
-    datapath = os.path.join(main_folder, "exp_data/subsetted_data/data_IO_0" + str(exp_data_number) + "_early_blocks" ".pkl")
+    datapath = os.path.join(main_folder, "exp_data/subsetted_data/data_IO_0" + str(exp_data_number) + "_late_blocks" ".pkl")
     # datapath = os.path.join(main_folder, "exp_data/subsetted_data/data_IO_0" + str(exp_data_number) + ".pkl")
     model_save_path = os.path.join(main_folder, "hmm_data/model_response_0" + str(exp_data_number) + "_"
                                    + str(model_number) + ".pkl")
@@ -2238,7 +2279,7 @@ def main(model_number=99, exp_data_number=83, run_test_foward_algorithm=False, r
                                        + str(model_number))
         run_through_dataset_fit_vector(datapath=datapath, savepath=model_save_path, training_savepath=training_savepath,
                                        num_non_hazard_rate_param=3, fit_hazard_rate=True,
-                                       cv=True, param=None, t_shift=10)
+                                       cv=True, param=None, t_shift=9)
 
     if run_control_model is True:
         control_model(datapath=datapath, savepath=model_save_path, training_savepath=training_savepath,
@@ -2261,6 +2302,7 @@ def main(model_number=99, exp_data_number=83, run_test_foward_algorithm=False, r
                               init_param_vals=np.array([10.0, 0.5, 0.2]),
                               n_params=3, fit_hazard_rate=True,
                               time_shift_list=np.arange(0, 11), num_epoch=500, batch_size=512,
+                              cv_random_seed=777,
                               # fitted_params=["sigmoid_k", "sigmoid_midpoint", "stimulus_var",
                               #                "true_negative", "false_negative", "false_positive",
                               #                "hazard_rate", "backward_prob"]
@@ -2468,9 +2510,9 @@ def main(model_number=99, exp_data_number=83, run_test_foward_algorithm=False, r
 if __name__ == "__main__":
     exp_data_number_list = [75, 78, 79, 80, 81, 83]  # [75, 78, 79, 80, 81, 83]
     for exp_data_number in exp_data_number_list:
-        main(model_number=74, exp_data_number=exp_data_number, run_test_on_data=False, run_gradient_descent=True,
+        main(model_number=75, exp_data_number=exp_data_number, run_test_on_data=False, run_gradient_descent=True,
              run_plot_training_loss=False, run_plot_sigmoid=False, run_plot_time_shift_cost=False,
-             run_plot_test_loss=False, run_model=False, run_plot_time_shift_test=False,
+             run_plot_test_loss=False, run_model=True, run_plot_time_shift_test=False,
              run_plot_hazard_rate=False, run_plot_trained_hazard_rate=False, run_benchmark_model=False,
              run_plot_time_shift_training_result=False, run_plot_posterior=False, run_control_model=False,
              run_plot_signal=False, run_plot_trained_posterior=False, run_plot_trained_sigmoid=False,
