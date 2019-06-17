@@ -694,8 +694,9 @@ def predict_lick(param_vals, signal):
 
     # posterior = forward_inference_w_tricks(signal.flatten())
 
-    # key = random.PRNGKey(777)
+    key = random.PRNGKey(777)
     # signal = signal.flatten() + (random.normal(key, (len(signal.flatten()), )) * standard_sigmoid(param_vals[2]))
+    signal = signal.flatten() + (random.normal(key, (len(signal.flatten()),)) * standard_sigmoid(param_vals[0]))
     # multiply standard normal by constant: aX + b = N(au + b, a^2\sigma^2)
     posterior = forward_inference_custom_transition_matrix(signal)
 
@@ -708,13 +709,14 @@ def predict_lick(param_vals, signal):
 
     # p_lick = apply_cost_benefit(change_posterior=posterior, true_positive=1.0, true_negative=0.0,
     #                             false_negative=0.0, false_positive=0.0) # param_vals[1]
-    p_lick = apply_strategy(posterior, k=param_vals[0], midpoint=param_vals[1])
+    # p_lick = apply_strategy(posterior, k=param_vals[0], midpoint=param_vals[1])
 
     # p_lick = apply_cost_benefit(change_posterior=posterior, true_positive=1.0, true_negative=0.0,
     #                             false_negative=0.0, false_positive=0.0) # param_vals[1]
     # p_lick = apply_strategy(p_lick, k=nonstandard_sigmoid(param_vals[0], min_val=0, max_val=20),
     #                         midpoint=nonstandard_sigmoid(param_vals[1], min_val=-10, max_val=10),
     #                         max_val=1-1e-5, min_val=1e-5)
+    p_lick = posterior
 
     # Add time shift
 
@@ -922,7 +924,7 @@ def run_through_dataset_fit_vector(datapath, savepath, training_savepath, param=
     """
 
     global time_shift
-    time_shift = 9
+    time_shift = 6
 
     if param is None:
         # if no parameters specified, then load the training result and get the last param
@@ -995,7 +997,7 @@ def run_through_dataset_fit_vector(datapath, savepath, training_savepath, param=
         global transition_matrix_list
         # _, transition_matrix_list = get_hazard_rate(hazard_rate_type="constant", constant_val=0.0001,
         # datapath=datapath)
-        _, transition_matrix_list = get_hazard_rate(hazard_rate_type="experimental", datapath=datapath)
+        _, transition_matrix_list = get_hazard_rate(hazard_rate_type="experimental_instantaneous", datapath=datapath)
         batched_predict_lick = vmap(predict_lick, in_axes=(None, 0))
 
     # signals has to be specially prepared to get the vectorised code running
@@ -2280,8 +2282,8 @@ def main(model_number=99, exp_data_number=83, run_test_foward_algorithm=False, r
         model_save_path = os.path.join(main_folder, "hmm_data/model_response_0" + str(exp_data_number) + "_"
                                        + str(model_number))
         run_through_dataset_fit_vector(datapath=datapath, savepath=model_save_path, training_savepath=training_savepath,
-                                       num_non_hazard_rate_param=3, fit_hazard_rate=True,
-                                       cv=True, param=None, t_shift=9)
+                                       num_non_hazard_rate_param=2, fit_hazard_rate=False,
+                                       cv=True, param=None, t_shift=6)
 
     if run_control_model is True:
         control_model(datapath=datapath, savepath=model_save_path, training_savepath=training_savepath,
@@ -2301,14 +2303,14 @@ def main(model_number=99, exp_data_number=83, run_test_foward_algorithm=False, r
         gradient_descent_w_cv(exp_data_path=datapath,
                               training_savepath=training_savepath,
                               # init_param_vals = np.array([10.0, 0.5, -3, 0.2, 0.2, 0.2]),
-                              init_param_vals=np.array([10.0, 0.5]),  # 0.2 (backward_prob)
-                              n_params=2, fit_hazard_rate=False,
+                              init_param_vals=np.array([-2]),  # 0.2 (backward_prob)
+                              n_params=1, fit_hazard_rate=False,
                               time_shift_list=np.arange(0, 11), num_epoch=500, batch_size=512,
                               cv_random_seed=777,
                               # fitted_params=["sigmoid_k", "sigmoid_midpoint", "stimulus_var",
                               #                "true_negative", "false_negative", "false_positive",
                               #                "hazard_rate", "backward_prob"]
-                              fitted_params=["sigmoid_k", "sigmoid_midpoint",
+                              fitted_params=["noise",
                                              "experiment_instataneous_hazard_rate", "time_shift"]
                               )
 
@@ -2513,7 +2515,7 @@ def main(model_number=99, exp_data_number=83, run_test_foward_algorithm=False, r
 if __name__ == "__main__":
     exp_data_number_list = [75, 78, 79, 80, 81, 83]  # [75, 78, 79, 80, 81, 83]
     for exp_data_number in exp_data_number_list:
-        main(model_number=76, exp_data_number=exp_data_number, run_test_on_data=False, run_gradient_descent=True,
+        main(model_number=77, exp_data_number=exp_data_number, run_test_on_data=False, run_gradient_descent=True,
              run_plot_training_loss=False, run_plot_sigmoid=False, run_plot_time_shift_cost=False,
              run_plot_test_loss=False, run_model=False, run_plot_time_shift_test=False,
              run_plot_hazard_rate=False, run_plot_trained_hazard_rate=False, run_benchmark_model=False,
