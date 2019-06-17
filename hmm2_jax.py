@@ -728,7 +728,6 @@ def predict_lick(param_vals, signal):
         p_lick = np.concatenate([p_lick, np.repeat(baseline, abs(time_shift))])
         p_lick = p_lick[abs(time_shift):(len(signal.flatten()) + abs(time_shift))]
 
-
     return p_lick
 
 
@@ -778,9 +777,8 @@ def loss_function_batch(param_vals, batch):
     # print("Barrier loss: ", str(barrier_loss))
 
     # smoothing penalty for hazard rate
-    batch_loss = batch_loss + smoothing.second_derivative_penalty(param_vals[num_non_hazard_rate_params:],
-                                                                  lambda_weight=20)
-
+    # batch_loss = batch_loss + smoothing.second_derivative_penalty(param_vals[num_non_hazard_rate_params:],
+    #                                                               lambda_weight=20)
 
     return batch_loss
 
@@ -1413,6 +1411,10 @@ def get_hazard_rate(hazard_rate_type="subjective", datapath=None, plot_hazard_ra
     elif hazard_rate_type == "random":
         hazard_rate_vec = onp.random.normal(loc=0.0, scale=0.5, size=(max_signal_length, ))
         hazard_rate_vec = standard_sigmoid(hazard_rate_vec)
+    elif hazard_rate_type == "experimental_instantaneous":
+        hazard_rate_hist = onp.histogram(change_time, range=(0, max_signal_length), bins=max_signal_length)[0] \
+                           / float(num_trial)
+        hazard_rate_vec = hazard_rate_hist
     if plot_hazard_rate is True:
         fig, ax = plt.subplots(1, 1, figsize=(8, 6))
         # ax.plot(subjective_hazard_rate, label="Subjective hazard rate")
@@ -1750,7 +1752,7 @@ def gradient_descent_w_cv(exp_data_path, training_savepath, init_param_vals=np.a
     signal_matrix, lick_matrix = create_vectorised_data(exp_data_path,
                                                         lick_exponential_decay=False, decay_constant=1.0)
     # initialise hazard rate using experimental values
-    hazard_rate, _ = get_hazard_rate(hazard_rate_type="experimental", datapath=exp_data_path)
+    hazard_rate, _ = get_hazard_rate(hazard_rate_type="experimental_instantaneous", datapath=exp_data_path)
 
     # fit constant hazard rate
     # hazard_rate = np.array([0.01])
@@ -1777,7 +1779,7 @@ def gradient_descent_w_cv(exp_data_path, training_savepath, init_param_vals=np.a
     else:
         batched_predict_lick = vmap(predict_lick, in_axes=(None, 0))
         global transition_matrix_list
-        _, transition_matrix_list = get_hazard_rate(hazard_rate_type="experimental", datapath=exp_data_path)
+        _, transition_matrix_list = get_hazard_rate(hazard_rate_type="experimental_instantaneous", datapath=exp_data_path)
 
     # for cases where the cumulative lick is used
     # global batched_cumulative_lick
@@ -2249,8 +2251,8 @@ def main(model_number=99, exp_data_number=83, run_test_foward_algorithm=False, r
     # datapath = "/media/timothysit/180C-2DDD/second_rotation_project/exp_data/subsetted_data/data_IO_083.pkl"
     main_folder = os.path.join(home, "Dropbox/notes/Projects/second_rotation_project/normative_model")
     # TODO: generalise the code below
-    datapath = os.path.join(main_folder, "exp_data/subsetted_data/data_IO_0" + str(exp_data_number) + "_late_blocks" ".pkl")
-    # datapath = os.path.join(main_folder, "exp_data/subsetted_data/data_IO_0" + str(exp_data_number) + ".pkl")
+    # datapath = os.path.join(main_folder, "exp_data/subsetted_data/data_IO_0" + str(exp_data_number) + "_late_blocks" ".pkl")
+    datapath = os.path.join(main_folder, "exp_data/subsetted_data/data_IO_0" + str(exp_data_number) + ".pkl")
     model_save_path = os.path.join(main_folder, "hmm_data/model_response_0" + str(exp_data_number) + "_"
                                    + str(model_number) + ".pkl")
     fig_save_path = os.path.join(main_folder, "figures/model_response_0" + str(exp_data_number) + "_"
@@ -2299,14 +2301,15 @@ def main(model_number=99, exp_data_number=83, run_test_foward_algorithm=False, r
         gradient_descent_w_cv(exp_data_path=datapath,
                               training_savepath=training_savepath,
                               # init_param_vals = np.array([10.0, 0.5, -3, 0.2, 0.2, 0.2]),
-                              init_param_vals=np.array([10.0, 0.5, 0.2]),
-                              n_params=3, fit_hazard_rate=True,
+                              init_param_vals=np.array([10.0, 0.5]),  # 0.2 (backward_prob)
+                              n_params=2, fit_hazard_rate=False,
                               time_shift_list=np.arange(0, 11), num_epoch=500, batch_size=512,
                               cv_random_seed=777,
                               # fitted_params=["sigmoid_k", "sigmoid_midpoint", "stimulus_var",
                               #                "true_negative", "false_negative", "false_positive",
                               #                "hazard_rate", "backward_prob"]
-                              fitted_params=["sigmoid_k", "sigmoid_midpoint", "smoothed_hazard_rate"]
+                              fitted_params=["sigmoid_k", "sigmoid_midpoint",
+                                             "experiment_instataneous_hazard_rate", "time_shift"]
                               )
 
 
@@ -2510,9 +2513,9 @@ def main(model_number=99, exp_data_number=83, run_test_foward_algorithm=False, r
 if __name__ == "__main__":
     exp_data_number_list = [75, 78, 79, 80, 81, 83]  # [75, 78, 79, 80, 81, 83]
     for exp_data_number in exp_data_number_list:
-        main(model_number=75, exp_data_number=exp_data_number, run_test_on_data=False, run_gradient_descent=True,
+        main(model_number=76, exp_data_number=exp_data_number, run_test_on_data=False, run_gradient_descent=True,
              run_plot_training_loss=False, run_plot_sigmoid=False, run_plot_time_shift_cost=False,
-             run_plot_test_loss=False, run_model=True, run_plot_time_shift_test=False,
+             run_plot_test_loss=False, run_model=False, run_plot_time_shift_test=False,
              run_plot_hazard_rate=False, run_plot_trained_hazard_rate=False, run_benchmark_model=False,
              run_plot_time_shift_training_result=False, run_plot_posterior=False, run_control_model=False,
              run_plot_signal=False, run_plot_trained_posterior=False, run_plot_trained_sigmoid=False,
