@@ -2162,12 +2162,13 @@ def get_model_posterior(exp_data, training_result, num_non_hazard_rate_params=2)
     hazard_rate_params = param_vals[num_non_hazard_rate_params:]
 
     global transition_matrix_list
+    #  note that make_transition_matrix internally passes the hazard_rate_params through a sigmoid
     transition_matrix_list = make_transition_matrix(hazard_rate_vec=hazard_rate_params,
                                                     backward_prob_vec=np.repeat(0.0, len(hazard_rate_params)))
 
     vmap_forward_inference = vmap(forward_inference_custom_transition_matrix)
 
-    posterior = list()
+    # posterior = list()
 
     signal_matrix, _ = create_vectorised_data_new(exp_data)
 
@@ -2245,7 +2246,8 @@ def main(model_number=99, exp_data_number=83, run_test_foward_algorithm=False, r
          run_model=False, run_plot_time_shift_test=False, run_plot_hazard_rate=False, run_plot_trained_hazard_rate=False,
          run_benchmark_model=False, run_plot_time_shift_training_result=False, run_plot_posterior=False, run_control_model=False,
          run_plot_signal=False, run_plot_trained_posterior=False, run_plot_trained_sigmoid=False, run_plot_time_shift_cost=False,
-         run_plot_change_times=False, run_get_model_posterior=False, run_plot_early_stop=False, find_best_time_shift=False):
+         run_plot_change_times=False, run_get_model_posterior=False, run_plot_early_stop=False, find_best_time_shift=False,
+         blocktype=None):
     home = expanduser("~")
     print("Running model: ", str(model_number))
     print("Using mouse: ", str(exp_data_number))
@@ -2253,8 +2255,13 @@ def main(model_number=99, exp_data_number=83, run_test_foward_algorithm=False, r
     # datapath = "/media/timothysit/180C-2DDD/second_rotation_project/exp_data/subsetted_data/data_IO_083.pkl"
     main_folder = os.path.join(home, "Dropbox/notes/Projects/second_rotation_project/normative_model")
     # TODO: generalise the code below
-    # datapath = os.path.join(main_folder, "exp_data/subsetted_data/data_IO_0" + str(exp_data_number) + "_late_blocks" ".pkl")
-    datapath = os.path.join(main_folder, "exp_data/subsetted_data/data_IO_0" + str(exp_data_number) + ".pkl")
+    if blocktype is None:
+        datapath = os.path.join(main_folder, "exp_data/subsetted_data/data_IO_0" + str(exp_data_number) + ".pkl")
+    elif blocktype == "early":
+        datapath = os.path.join(main_folder, "exp_data/subsetted_data/data_IO_0" + str(exp_data_number) + "_early_blocks" ".pkl")
+    elif blocktype == "late":
+        datapath = os.path.join(main_folder, "exp_data/subsetted_data/data_IO_0" + str(exp_data_number) + "_late_blocks" ".pkl")
+
     model_save_path = os.path.join(main_folder, "hmm_data/model_response_0" + str(exp_data_number) + "_"
                                    + str(model_number) + ".pkl")
     fig_save_path = os.path.join(main_folder, "figures/model_response_0" + str(exp_data_number) + "_"
@@ -2484,7 +2491,8 @@ def main(model_number=99, exp_data_number=83, run_test_foward_algorithm=False, r
         with open(datapath, "rb") as handle:
             exp_data = pkl.load(handle)
 
-        posterior, hazard_rate = get_model_posterior(exp_data, training_result=training_result)
+        posterior, hazard_rate = get_model_posterior(exp_data, training_result=training_result,
+                                                     num_non_hazard_rate_params=2)
 
         model_posterior_save_path = os.path.join(main_folder, "hmm_data", "model_posterior_mouse_"
                                                  + str(exp_data_number) + "_model_" + str(model_number) + ".pkl")
@@ -2515,12 +2523,12 @@ def main(model_number=99, exp_data_number=83, run_test_foward_algorithm=False, r
 if __name__ == "__main__":
     exp_data_number_list = [75, 78, 79, 80, 81, 83]  # [75, 78, 79, 80, 81, 83]
     for exp_data_number in exp_data_number_list:
-        main(model_number=77, exp_data_number=exp_data_number, run_test_on_data=False, run_gradient_descent=True,
+        main(model_number=78, exp_data_number=exp_data_number, run_test_on_data=False, run_gradient_descent=True,
              run_plot_training_loss=False, run_plot_sigmoid=False, run_plot_time_shift_cost=False,
              run_plot_test_loss=False, run_model=False, run_plot_time_shift_test=False,
              run_plot_hazard_rate=False, run_plot_trained_hazard_rate=False, run_benchmark_model=False,
              run_plot_time_shift_training_result=False, run_plot_posterior=False, run_control_model=False,
              run_plot_signal=False, run_plot_trained_posterior=False, run_plot_trained_sigmoid=False,
-             run_plot_change_times=False, run_get_model_posterior=False, run_plot_early_stop=False,
-             find_best_time_shift=False)
+             run_plot_change_times=False, run_get_model_posterior=True, run_plot_early_stop=False,
+             find_best_time_shift=False, blocktype=None)
 
