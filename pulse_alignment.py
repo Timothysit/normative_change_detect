@@ -9,7 +9,7 @@ import pickle as pkl
 import pandas as pd
 from tqdm import tqdm
 
-def find_pulses(exp_data, window_width=50):
+def find_pulses(exp_data, window_width=50, pulse_time_limit_seconds=None):
     """
     Find pulse locations from the signals.
     Fast pulse: 1.5 standard deviations above the mean temporal frequency (during baseline period)
@@ -49,6 +49,14 @@ def find_pulses(exp_data, window_width=50):
         trial_baseline_signal = trial_signal[:change_time-1]  # convert to 0-indexing!
         # trial_baseline_signal = trial_signal[:change_time - 1 - int(window_width/2)]  # remove pulse which overlap
         # with change time
+
+        # further only subset pulse in the first 6 seconds
+        if pulse_time_limit_seconds is not None:
+            monitor_hz = 23
+            pulse_time_limit_frames = monitor_hz * pulse_time_limit_seconds
+            # further subset the baseline signal
+            trial_baseline_signal = trial_baseline_signal[:pulse_time_limit_frames-1]  # 0-indexing again.
+
         fast_pulse_loc.append(np.where(trial_baseline_signal >= fast_pulse_threshold)[0])
         slow_pulse_loc.append(np.where(trial_baseline_signal <= slow_pulse_threshold)[0])
         reference_pulse_loc.append(np.where((trial_baseline_signal >= reference_pulse_low_bound) &
@@ -92,7 +100,8 @@ def get_align_pulse_w_model_output(pulse_loc_list, model_output, window_width=10
 
 def align_pulse_w_model_output(pulse_loc_list, model_output, window_width=10,
                                trial_subset=None, linecolor="blue", exclude_close_pulse=True,
-                               intermediate_pulse_loc=None, fig=None, ax=None, linelabel=None):
+                               intermediate_pulse_loc=None, fig=None, ax=None, linelabel=None,
+                               shade_metric="std", linestyle="-"):
     """
 
     :param pulse_loc_list:
@@ -141,11 +150,12 @@ def align_pulse_w_model_output(pulse_loc_list, model_output, window_width=10,
                                                                            exclude_close_pulse=exclude_close_pulse)
         model_output_mean = model_output_mean - intermediate_pulse_loc_mean
 
-    ax.plot(peri_pulse_time, model_output_mean, color=linecolor, label=linelabel)
+    ax.plot(peri_pulse_time, model_output_mean, color=linecolor, label=linelabel, linestyle=linestyle)
 
     if intermediate_pulse_loc is None:
-        ax.fill_between(peri_pulse_time, model_output_mean - model_output_std,
-                     model_output_mean + model_output_std, alpha=0.3, color=linecolor)
+        if shade_metric == "std":
+            ax.fill_between(peri_pulse_time, model_output_mean - model_output_std,
+                         model_output_mean + model_output_std, alpha=0.3, color=linecolor)
 
 
     ax.set_xlabel("Peri-pulse time (frames)")
@@ -171,15 +181,18 @@ def plot_model_pulse_response_dist(fig, ax, pulse_loc_list, model_output, color=
 
     return fig, ax
 
-def main(model_number=70, mouse_number=75, time_shift=7):
+def main(model_number=70, mouse_number=75, time_shift=7, run_compare_early_late_block=False):
     home = os.path.expanduser("~")
     mouse_model_info = "_model_" + str(model_number) + "_mouse_" + str(mouse_number)
     additional_info = "before_change_window"
     print("Running alignment with mouse %d and model %d" % (mouse_number, model_number))
-    main_folder = os.path.join(home, "Dropbox/notes/Projects/second_rotation_project/normative_model")
+    # main_folder = os.path.join(home, "Dropbox/notes/Projects/second_rotation_project/normative_model")
+    main_folder = "/media/timothysit/180C-2DDD/second_rotation_project/"
     fig_folder = os.path.join(main_folder, "figures", "alignment_plots")
 
-    mouse_data_path = os.path.join(main_folder, "exp_data/subsetted_data/data_IO_0" + str(mouse_number) + ".pkl")
+    # mouse_data_path = os.path.join(main_folder, "exp_data/subsetted_data/data_IO_0" + str(mouse_number) + ".pkl")
+    mouse_data_path = os.path.join(main_folder, "exp_data/subsetted_data/data_IO_0" + str(mouse_number) +
+                                   "_early_blocks" + ".pkl")
     with open(mouse_data_path, "rb") as handle:
         exp_data = pkl.load(handle)
 
@@ -188,7 +201,9 @@ def main(model_number=70, mouse_number=75, time_shift=7):
     with open(model_path, "rb") as handle:
         model_data = pkl.load(handle)
 
-    slow_pulse_loc, fast_pulse_loc, intermediate_pulse_loc = find_pulses(exp_data, window_width=50)
+    slow_pulse_loc, fast_pulse_loc, intermediate_pulse_loc = find_pulses(exp_data, window_width=50,
+                                                                         pulse_time_limit_seconds=3)
+
 
     # plot pulse speed distribution just to double check
     figname = "pulse_speed_distribution" + mouse_model_info + "_first_1000"
@@ -223,8 +238,6 @@ def main(model_number=70, mouse_number=75, time_shift=7):
     ax.set_xlim([0, 350])
     fig.savefig(os.path.join(fig_folder, figname), dpi=300)
 
-
-
     model_posterior_save_path = os.path.join(main_folder, "hmm_data", "model_posterior_mouse_"
                                              + str(mouse_number) + "_model_" + str(model_number) + ".pkl")
     with open(model_posterior_save_path, "rb") as handle:
@@ -242,7 +255,7 @@ def main(model_number=70, mouse_number=75, time_shift=7):
     figname = "posterior_response_distribution" + mouse_model_info
     fig.savefig(os.path.join(fig_folder, figname), dpi=300)
 
-    """
+
     # Plot posterior / model output aligned to pulse
     fig, ax = align_pulse_w_model_output(pulse_loc_list=fast_pulse_loc, model_output=model_output,
                                 window_width=50, trial_subset=1000, linecolor="blue")
@@ -267,7 +280,6 @@ def main(model_number=70, mouse_number=75, time_shift=7):
     fig.savefig(os.path.join(fig_folder, figname), dpi=300)
 
     # Intermediate subtracted
-    """
 
     # Both fast and slow on the same plot
 
@@ -287,9 +299,64 @@ def main(model_number=70, mouse_number=75, time_shift=7):
 
     # Intermediate subtracted pulse response separated by early vs. late blocks
 
+    # compare early vs. late block pulse alignment
+
+    if run_compare_early_late_block is True:
+        print("Running comparison between early and late blocks")
+        mouse_number = 75
+        model_number_list = [74, 75]
+        model_time_shift_list = [8, 9]
+        line_styles = ["-", "--"]
+        # exp_data_file_name_modifiers = ["_early_blocks", "_late_blocks"]
+        exp_data_file_name_modifiers = ["_early_blocks", "_late_blocks"]
+        # model_number_list = [74]
+        # model_time_shift_list = [8]
+        # line_styles = ["-"]
+        # exp_data_file_name_modifiers = ["_early_blocks"]
+
+        # figname = "posterior_response_aligned_early_vs_late_block_fast_pulse_intermediate_subtracted_corresponding_blocks_first_6_seconds"
+        fig, ax = plt.subplots()
+        for pulse_type in ["fast_pulse", "slow_pulse"]:
+            figname = "posterior_response_aligned_early_vs_late_block_" + \
+                      pulse_type + "_intermediate_subtracted_corresponding_blocks_first_6_seconds"
+            for model_count, model_number in enumerate(model_number_list):
+                print("Model number: " + str(model_number))
+                print("Block type: " + exp_data_file_name_modifiers[model_count])
+                exp_data_path = os.path.join(main_folder,
+                                                           "exp_data/subsetted_data/data_IO_0" + str(mouse_number) +
+                                                           exp_data_file_name_modifiers[model_count] + ".pkl")
+                with open(exp_data_path, "rb") as handle:
+                    exp_data = pkl.load(handle)
+
+                slow_pulse_loc, fast_pulse_loc, intermediate_pulse_loc = find_pulses(exp_data, window_width=50,
+                                                                                     pulse_time_limit_seconds=6)
+
+                model_posterior_save_path = os.path.join(main_folder, "hmm_data", "model_posterior_mouse_"
+                                                         + str(mouse_number) + "_model_" + str(model_number) + ".pkl")
+                with open(model_posterior_save_path, "rb") as handle:
+                    posterior_data = pkl.load(handle)
+
+                if pulse_type == "fast_pulse":
+                    pulse_loc = fast_pulse_loc
+                elif pulse_type == "slow_pulse":
+                    pulse_loc = slow_pulse_loc
+
+                fig, ax = align_pulse_w_model_output(fig=fig, ax=ax, pulse_loc_list=pulse_loc,
+                                                     intermediate_pulse_loc=intermediate_pulse_loc,
+                                                     model_output=posterior_data,
+                                                   window_width=50, trial_subset=1000, linecolor="blue",
+                                                     shade_metric=None,
+                                                     linestyle=line_styles[model_count])
+
+        ax.grid()
+        ax.legend(["early block", "late block"], frameon=False)
+        fig.set_size_inches(4, 4)
+        fig.savefig(os.path.join(fig_folder, figname), dpi=300)
+
+
 
 if __name__ == "__main__":
-    mouse_number_list = [75, 78, 79, 80, 81, 83]
-    time_shift_list = [6, 7, 9, 8, 7, 7]
+    mouse_number_list = [75] # [75, 78, 79, 80, 81, 83]
+    time_shift_list = [8] # [8, 9, 9, 10, 9, 8]
     for mouse_number, time_shift in zip(mouse_number_list, time_shift_list):
-        main(model_number=67, mouse_number=mouse_number, time_shift=time_shift)
+        main(model_number=74, mouse_number=mouse_number, time_shift=time_shift, run_compare_early_late_block=True)
