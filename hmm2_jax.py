@@ -779,8 +779,8 @@ def loss_function_batch(param_vals, batch):
     # print("Barrier loss: ", str(barrier_loss))
 
     # smoothing penalty for hazard rate
-    # batch_loss = batch_loss + smoothing.second_derivative_penalty(param_vals[num_non_hazard_rate_params:],
-    #                                                               lambda_weight=20)
+    batch_loss = batch_loss + smoothing.second_derivative_penalty(param_vals[num_non_hazard_rate_params:],
+                                                                   lambda_weight=100)
 
     return batch_loss
 
@@ -2310,15 +2310,15 @@ def main(model_number=99, exp_data_number=83, run_test_foward_algorithm=False, r
         gradient_descent_w_cv(exp_data_path=datapath,
                               training_savepath=training_savepath,
                               # init_param_vals = np.array([10.0, 0.5, -3, 0.2, 0.2, 0.2]),
-                              init_param_vals=np.array([-2]),  # 0.2 (backward_prob)
-                              n_params=1, fit_hazard_rate=False,
+                              init_param_vals=np.array([10.0, 0.5]),  # 0.2 (backward_prob)
+                              n_params=1, fit_hazard_rate=True,
                               time_shift_list=np.arange(0, 11), num_epoch=500, batch_size=512,
                               cv_random_seed=777,
                               # fitted_params=["sigmoid_k", "sigmoid_midpoint", "stimulus_var",
                               #                "true_negative", "false_negative", "false_positive",
                               #                "hazard_rate", "backward_prob"]
-                              fitted_params=["noise",
-                                             "experiment_instataneous_hazard_rate", "time_shift"]
+                              fitted_params=["sigmoid_k", "smooth_hazard_rate",
+                                             "sigmoid_midpoint", "time_shift"]
                               )
 
 
