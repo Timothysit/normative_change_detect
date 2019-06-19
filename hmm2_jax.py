@@ -780,7 +780,7 @@ def loss_function_batch(param_vals, batch):
 
     # smoothing penalty for hazard rate
     batch_loss = batch_loss + smoothing.second_derivative_penalty(param_vals[num_non_hazard_rate_params:],
-                                                                   lambda_weight=1000)
+                                                                   lambda_weight=1)
 
     return batch_loss
 
@@ -2311,14 +2311,14 @@ def main(model_number=99, exp_data_number=83, run_test_foward_algorithm=False, r
                               training_savepath=training_savepath,
                               # init_param_vals = np.array([10.0, 0.5, -3, 0.2, 0.2, 0.2]),
                               init_param_vals=np.array([10.0, 0.5]),  # 0.2 (backward_prob)
-                              n_params=1, fit_hazard_rate=True,
+                              n_params=2, fit_hazard_rate=True,
                               time_shift_list=np.arange(0, 11), num_epoch=500, batch_size=512,
                               cv_random_seed=777,
                               # fitted_params=["sigmoid_k", "sigmoid_midpoint", "stimulus_var",
                               #                "true_negative", "false_negative", "false_positive",
                               #                "hazard_rate", "backward_prob"]
-                              fitted_params=["sigmoid_k", "smooth_hazard_rate",
-                                             "sigmoid_midpoint", "time_shift"]
+                              fitted_params=["sigmoid_k", "sigmoid_midpoint", "smooth_hazard_rate_lambda_1",
+                                            "time_shift"]
                               )
 
 
@@ -2523,9 +2523,9 @@ def main(model_number=99, exp_data_number=83, run_test_foward_algorithm=False, r
 if __name__ == "__main__":
     exp_data_number_list = [75]  # [75, 78, 79, 80, 81, 83]
     for exp_data_number in exp_data_number_list:
-        main(model_number=79, exp_data_number=exp_data_number, run_test_on_data=False, run_gradient_descent=True,
+        main(model_number=80, exp_data_number=exp_data_number, run_test_on_data=False, run_gradient_descent=False,
              run_plot_training_loss=False, run_plot_sigmoid=False, run_plot_time_shift_cost=False,
-             run_plot_test_loss=False, run_model=False, run_plot_time_shift_test=False,
+             run_plot_test_loss=False, run_model=True, run_plot_time_shift_test=False,
              run_plot_hazard_rate=False, run_plot_trained_hazard_rate=False, run_benchmark_model=False,
              run_plot_time_shift_training_result=False, run_plot_posterior=False, run_control_model=False,
              run_plot_signal=False, run_plot_trained_posterior=False, run_plot_trained_sigmoid=False,
