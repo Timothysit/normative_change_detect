@@ -780,7 +780,7 @@ def loss_function_batch(param_vals, batch):
 
     # smoothing penalty for hazard rate
     batch_loss = batch_loss + smoothing.second_derivative_penalty(param_vals[num_non_hazard_rate_params:],
-                                                                   lambda_weight=100)
+                                                                   lambda_weight=1000)
 
     return batch_loss
 
@@ -1888,7 +1888,7 @@ def gradient_descent_w_cv(exp_data_path, training_savepath, init_param_vals=np.a
                     opt_state = step(epoch, opt_state, next(batches))
                     # print("Parameters:", opt_state[0][0:6])
             else:
-                opt_state = step(epoch, opt_staloss_function_batchte, (signal_matrix_train, lick_matrix_train))
+                opt_state = step(epoch, opt_state, loss_function_batch(signal_matrix_train, lick_matrix_train))
 
             if epoch % 10 == 0:
                 params = optimizers.get_params(opt_state)
@@ -2521,14 +2521,14 @@ def main(model_number=99, exp_data_number=83, run_test_foward_algorithm=False, r
 
 
 if __name__ == "__main__":
-    exp_data_number_list = [75, 78, 79, 80, 81, 83]  # [75, 78, 79, 80, 81, 83]
+    exp_data_number_list = [75]  # [75, 78, 79, 80, 81, 83]
     for exp_data_number in exp_data_number_list:
-        main(model_number=78, exp_data_number=exp_data_number, run_test_on_data=False, run_gradient_descent=True,
+        main(model_number=79, exp_data_number=exp_data_number, run_test_on_data=False, run_gradient_descent=True,
              run_plot_training_loss=False, run_plot_sigmoid=False, run_plot_time_shift_cost=False,
              run_plot_test_loss=False, run_model=False, run_plot_time_shift_test=False,
              run_plot_hazard_rate=False, run_plot_trained_hazard_rate=False, run_benchmark_model=False,
              run_plot_time_shift_training_result=False, run_plot_posterior=False, run_control_model=False,
              run_plot_signal=False, run_plot_trained_posterior=False, run_plot_trained_sigmoid=False,
-             run_plot_change_times=False, run_get_model_posterior=True, run_plot_early_stop=False,
+             run_plot_change_times=False, run_get_model_posterior=False, run_plot_early_stop=False,
              find_best_time_shift=False, blocktype=None)
 
