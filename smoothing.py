@@ -3,6 +3,7 @@ import jax.numpy as np
 import numpy as onp  # original numpy for indexed assignment/mutation (outside context of differentiation)
 from jax import vmap
 import jax.random as jaxrandom
+import matplotlib.pyplot as plt
 
 def second_derivative_penalty(x, lambda_weight=1):
     """
@@ -29,22 +30,21 @@ def second_derivative_penalty(x, lambda_weight=1):
         x_pprime = (x[x_ind + 1] - 2 * x[x_ind] + x[x_ind-1]) / (h**2)  # central difference method
         x_pprime_list.append(x_pprime)
 
-
-    return lambda_weight * np.sum(x_pprime ** 2)
-
-
-
+    return lambda_weight * np.sum(np.array(x_pprime_list) ** 2)
 
 
 def test_penalty_func(penalty_func, scale_list=[0.1, 1, 2]):
 
+    plt.figure()
     x = np.linspace(1, 1000, 1000)
     for scale in scale_list:
         y_w_noise = np.sin(x) + onp.random.normal(scale=scale, size=len(x))
         smoothness_cost = penalty_func(y_w_noise, lambda_weight=1)
+        plt.plot(y_w_noise)
         print("Scale: %.2f" % scale)
         print("Smoothness penalty: %.2f" % smoothness_cost)
 
+    plt.show()
 
 def rbf_kernel(xs, lengthscale=1, amplitude=1):
     # From here: https://github.com/google/jax/pull/97
@@ -134,8 +134,8 @@ def standard_sigmoid(input):
 
 def main():
     test_penalty_func(second_derivative_penalty, scale_list=[0.1, 1, 2])
-    a = np.eye(3)
-    print(a * np.array([0, 4, 99]))
+    # a = np.eye(3)
+    # print(a * np.array([0, 4, 99]))
 if __name__ == '__main__':
     main()
 
