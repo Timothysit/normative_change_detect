@@ -754,7 +754,7 @@ def loss_function_fit_vector_faster(param_vals):
     return batch_loss
 
 
-def loss_function_batch(param_vals, batch):
+def loss_function_batch(param_vals, batch, smoothing_lambda):
     # missing arguments: signals, param_vals_, actual_lick_,
     """
     loss between predicted licks and actual licks
@@ -779,8 +779,9 @@ def loss_function_batch(param_vals, batch):
     # print("Barrier loss: ", str(barrier_loss))
 
     # smoothing penalty for hazard rate
-    batch_loss = batch_loss + smoothing.second_derivative_penalty(param_vals[num_non_hazard_rate_params:],
-                                                                   lambda_weight=1)
+    if smoothing_lambda is not None:
+        batch_loss = batch_loss + smoothing.second_derivative_penalty(param_vals[num_non_hazard_rate_params:],
+                                                               lambda_weight=smoothing_lambda)
 
     return batch_loss
 
@@ -1728,7 +1729,7 @@ def gradient_descent_w_cv(exp_data_path, training_savepath, init_param_vals=np.a
                                    time_shift_list=np.arange(0, 5), num_epoch=10, fit_hazard_rate=True,
                                    cv_random_seed=None,
                                    n_params=2, batch_size=None,
-                                   fitted_params=None, patience_threshold=2):
+                                   fitted_params=None, patience_threshold=2, smoothing_lambda=None):
     """
     Runs gradient descent to optimise parameters of the HMM to fit behavioural results with cross validation.
     :param exp_data_path: path to file containing the experimental data
@@ -1740,6 +1741,7 @@ def gradient_descent_w_cv(exp_data_path, training_savepath, init_param_vals=np.a
     :param cv_random_seed: random seed used for test-validation-train split
     :param n_params: number of non-hazard-rate parameters to fit, subsequent parameters are hazard rate parameters
     :param batch_size: size of batch for minibatch gradient descent, if None, then the entire batch is used
+    :param smoothing_lmabda: penalty term magnitude for smoothing the hazard rate
     :param fitted_params: (optional) list containing the names of the listed parameters, useful for model comparison
     :return:
     """
@@ -1878,7 +1880,7 @@ def gradient_descent_w_cv(exp_data_path, training_savepath, init_param_vals=np.a
         @jit
         def step(i, opt_state, batch):
             params = optimizers.get_params(opt_state)
-            g = grad(loss_function_batch)(params, batch)
+            g = grad(loss_function_batch)(params, batch, smoothing_lambda)
             return opt_update(i, g, opt_state)
 
         for epoch in range(num_epoch):
@@ -1888,12 +1890,13 @@ def gradient_descent_w_cv(exp_data_path, training_savepath, init_param_vals=np.a
                     opt_state = step(epoch, opt_state, next(batches))
                     # print("Parameters:", opt_state[0][0:6])
             else:
-                opt_state = step(epoch, opt_state, loss_function_batch(signal_matrix_train, lick_matrix_train))
+                opt_state = step(epoch, opt_state, loss_function_batch(params,
+                                                                       (signal_matrix_train, lick_matrix_train)))
 
             if epoch % 10 == 0:
                 params = optimizers.get_params(opt_state)
-                train_loss = loss_function_batch(params, (signal_matrix_train, lick_matrix_train))
-                val_loss = loss_function_batch(params, (signal_matrix_val, lick_matrix_val))
+                train_loss = loss_function_batch(params, (signal_matrix_train, lick_matrix_train), smoothing_lambda)
+                val_loss = loss_function_batch(params, (signal_matrix_val, lick_matrix_val), smoothing_lambda)
                 print("Training loss:", train_loss)
                 train_loss_list.append(train_loss)
 
@@ -1911,7 +1914,7 @@ def gradient_descent_w_cv(exp_data_path, training_savepath, init_param_vals=np.a
                                       alpha=0.001)
                     patience_counter += stop
                 if patience_counter >= patience_threshold:
-                    test_loss = loss_function_batch(params, (signal_matrix_test, lick_matrix_test))
+                    test_loss = loss_function_batch(params, (signal_matrix_test, lick_matrix_test), smoothing_lambda)
                     print("Test loss: " + str(test_loss))
                     test_loss_list.append(test_loss)
                     break
@@ -1945,6 +1948,7 @@ def gradient_descent_w_cv(exp_data_path, training_savepath, init_param_vals=np.a
     training_result["train_indices"] = train_indices
     training_result["test_indices"] = test_indices
     training_result["cv_random_seed"] = cv_random_seed
+    training_result["smoothing_lambda"] = smoothing_lambda
 
     if fitted_params is not None:
         training_result["fitted_params"] = fitted_params
@@ -2247,7 +2251,7 @@ def main(model_number=99, exp_data_number=83, run_test_foward_algorithm=False, r
          run_benchmark_model=False, run_plot_time_shift_training_result=False, run_plot_posterior=False, run_control_model=False,
          run_plot_signal=False, run_plot_trained_posterior=False, run_plot_trained_sigmoid=False, run_plot_time_shift_cost=False,
          run_plot_change_times=False, run_get_model_posterior=False, run_plot_early_stop=False, find_best_time_shift=False,
-         blocktype=None):
+         blocktype=None, smoothing_lambda=None):
     home = expanduser("~")
     print("Running model: ", str(model_number))
     print("Using mouse: ", str(exp_data_number))
@@ -2318,7 +2322,8 @@ def main(model_number=99, exp_data_number=83, run_test_foward_algorithm=False, r
                               #                "true_negative", "false_negative", "false_positive",
                               #                "hazard_rate", "backward_prob"]
                               fitted_params=["sigmoid_k", "sigmoid_midpoint", "smooth_hazard_rate_lambda_1",
-                                            "time_shift"]
+                                            "time_shift"],
+                              smoothing_lambda=smoothing_lambda,
                               )
 
 
@@ -2521,14 +2526,20 @@ def main(model_number=99, exp_data_number=83, run_test_foward_algorithm=False, r
 
 
 if __name__ == "__main__":
-    exp_data_number_list = [75]  # [75, 78, 79, 80, 81, 83]
-    for exp_data_number in exp_data_number_list:
-        main(model_number=80, exp_data_number=exp_data_number, run_test_on_data=False, run_gradient_descent=False,
-             run_plot_training_loss=False, run_plot_sigmoid=False, run_plot_time_shift_cost=False,
-             run_plot_test_loss=False, run_model=True, run_plot_time_shift_test=False,
-             run_plot_hazard_rate=False, run_plot_trained_hazard_rate=False, run_benchmark_model=False,
-             run_plot_time_shift_training_result=False, run_plot_posterior=False, run_control_model=False,
-             run_plot_signal=False, run_plot_trained_posterior=False, run_plot_trained_sigmoid=False,
-             run_plot_change_times=False, run_get_model_posterior=False, run_plot_early_stop=False,
-             find_best_time_shift=False, blocktype=None)
+    # exp_data_number_list = [75]  # [75, 78, 79, 80, 81, 83]
+    # for exp_data_number in exp_data_number_list:
+    #     main(model_number=81, exp_data_number=exp_data_number, run_test_on_data=False, run_gradient_descent=True,
+    #          run_plot_training_loss=False, run_plot_sigmoid=False, run_plot_time_shift_cost=False,
+    #          run_plot_test_loss=False, run_model=False, run_plot_time_shift_test=False,
+    #          run_plot_hazard_rate=False, run_plot_trained_hazard_rate=False, run_benchmark_model=False,
+    #          run_plot_time_shift_training_result=False, run_plot_posterior=False, run_control_model=False,
+    #          run_plot_signal=False, run_plot_trained_posterior=False, run_plot_trained_sigmoid=False,
+    #          run_plot_change_times=False, run_get_model_posterior=False, run_plot_early_stop=False,
+    #          find_best_time_shift=False, blocktype=None, smoothing_lambda=None)
 
+    mouse_number = 75
+    smoothing_lambda_list = [0.1, 0.25, 0.5, 0.75]
+    model_number_list = [81, 82, 83, 84]
+    for model_number, smoothing_lambda in zip(model_number_list, smoothing_lambda_list):
+        main(model_number=model_number, exp_data_number=mouse_number, run_gradient_descent=True,
+             smoothing_lambda=smoothing_lambda)
