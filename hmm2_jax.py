@@ -2359,8 +2359,10 @@ def main(model_number=99, exp_data_number=83, run_test_foward_algorithm=False, r
         nmt_plot.plot_sigmoid_comparisions(training_savepath, plot_least_loss_sigmoid=True, figsavepath=figsavepath)
 
     if run_plot_trained_sigmoid is True:
-        exp_data_number_list = [75, 78, 79, 80, 81, 83]
-        label_list = [1, 2, 3, 4, 5, 6]
+        # exp_data_number_list = [75, 78, 79, 80, 81, 83]
+        exp_data_number_list = [75]
+        # label_list = [1, 2, 3, 4, 5, 6]
+        label_list = [1]
         figsavepath = os.path.join(main_folder, "figures", "sigmoid",
                                    "mouse_sigmoid_comparison_model_" + str(model_number))
         plt.style.use(stylesheet_path)
@@ -2374,7 +2376,7 @@ def main(model_number=99, exp_data_number=83, run_test_foward_algorithm=False, r
                 training_result = pkl.load(handle)
             fig, ax = nmt_plot.plot_trained_sigmoid(fig, ax, training_result, sigmoid_func,
                                                     training_epoch=None, label=label)
-
+        ax.set_ylim([-0.1, 0.75])
         ax.grid()
         ax.legend(title="Mouse")
         fig.savefig(figsavepath)
@@ -2402,7 +2404,8 @@ def main(model_number=99, exp_data_number=83, run_test_foward_algorithm=False, r
         # get max_signal_length, for when constant hazard rate is used
         _, lick_matrix = create_vectorised_data(datapath)
         max_signal_length = np.shape(lick_matrix)[1]
-        sigmoid_function = functools.partial(nonstandard_sigmoid, min_val=0, max_val=1.0, k=1, midpoint=0.5)
+        # ATTENTION: make sure the sigmoid function below is the same that is used to train the model.
+        sigmoid_function = functools.partial(nonstandard_sigmoid, min_val=0, max_val=1.0, k=1, midpoint=2)
         fig, ax = nmt_plot.plot_trained_hazard_rate(training_savepath, sigmoid_function, num_non_hazard_rate_param=2,
                                                     constant_hazard_rate=False, max_signal_length=max_signal_length)
         fig.set_size_inches(8, 4)
@@ -2413,7 +2416,7 @@ def main(model_number=99, exp_data_number=83, run_test_foward_algorithm=False, r
                                    + str(exp_data_number))
         fig, ax = nmt_plot.plot_trained_hazard_rate(training_savepath, sigmoid_function, num_non_hazard_rate_param=2,
                                                     constant_hazard_rate=False, max_signal_length=max_signal_length)
-        mouse_hazard_rate, _ = get_hazard_rate(hazard_rate_type="experimental", datapath=datapath,
+        mouse_hazard_rate, _ = get_hazard_rate(hazard_rate_type="experimental_instantaneous", datapath=datapath,
                                                plot_hazard_rate=False,
                         figsavepath=None)
         ax.plot(mouse_hazard_rate)
@@ -2525,12 +2528,12 @@ def main(model_number=99, exp_data_number=83, run_test_foward_algorithm=False, r
 
 
 if __name__ == "__main__":
-    exp_data_number_list = [78, 79, 80, 81, 83]  # [75, 78, 79, 80, 81, 83]
+    exp_data_number_list = [75]  # [75, 78, 79, 80, 81, 83]
     for exp_data_number in exp_data_number_list:
-        main(model_number=80, exp_data_number=exp_data_number, run_test_on_data=False, run_gradient_descent=True,
+        main(model_number=80, exp_data_number=exp_data_number, run_test_on_data=False, run_gradient_descent=False,
              run_plot_training_loss=False, run_plot_sigmoid=False, run_plot_time_shift_cost=False,
              run_plot_test_loss=False, run_model=False, run_plot_time_shift_test=False,
-             run_plot_hazard_rate=False, run_plot_trained_hazard_rate=False, run_benchmark_model=False,
+             run_plot_hazard_rate=False, run_plot_trained_hazard_rate=True, run_benchmark_model=False,
              run_plot_time_shift_training_result=False, run_plot_posterior=False, run_control_model=False,
              run_plot_signal=False, run_plot_trained_posterior=False, run_plot_trained_sigmoid=False,
              run_plot_change_times=False, run_get_model_posterior=False, run_plot_early_stop=False,
