@@ -778,10 +778,9 @@ def loss_function_batch(param_vals, batch, smoothing_lambda):
     # batch_loss = batch_loss + barrier_loss
     # print("Barrier loss: ", str(barrier_loss))
 
-    # smoothing penalty for hazard rate
-    if smoothing_lambda is not None:
-        batch_loss = batch_loss + smoothing.second_derivative_penalty(param_vals[num_non_hazard_rate_params:],
-                                                               lambda_weight=smoothing_lambda)
+    # smoothing penalty for hazard rate (0 by default to have no penalty)
+    batch_loss = batch_loss + smoothing.second_derivative_penalty(param_vals[num_non_hazard_rate_params:],
+                                                           lambda_weight=smoothing_lambda)
 
     return batch_loss
 
@@ -1729,7 +1728,7 @@ def gradient_descent_w_cv(exp_data_path, training_savepath, init_param_vals=np.a
                                    time_shift_list=np.arange(0, 5), num_epoch=10, fit_hazard_rate=True,
                                    cv_random_seed=None,
                                    n_params=2, batch_size=None,
-                                   fitted_params=None, patience_threshold=2, smoothing_lambda=None):
+                                   fitted_params=None, patience_threshold=2, smoothing_lambda=0):
     """
     Runs gradient descent to optimise parameters of the HMM to fit behavioural results with cross validation.
     :param exp_data_path: path to file containing the experimental data
@@ -2293,7 +2292,7 @@ def main(model_number=99, exp_data_number=83, run_test_foward_algorithm=False, r
         model_save_path = os.path.join(main_folder, "hmm_data/model_response_0" + str(exp_data_number) + "_"
                                        + str(model_number))
         run_through_dataset_fit_vector(datapath=datapath, savepath=model_save_path, training_savepath=training_savepath,
-                                       num_non_hazard_rate_param=2, fit_hazard_rate=False,
+                                       num_non_hazard_rate_param=2, fit_hazard_rate=True,
                                        cv=True, param=None, t_shift=6)
 
     if run_control_model is True:
@@ -2321,7 +2320,7 @@ def main(model_number=99, exp_data_number=83, run_test_foward_algorithm=False, r
                               # fitted_params=["sigmoid_k", "sigmoid_midpoint", "stimulus_var",
                               #                "true_negative", "false_negative", "false_positive",
                               #                "hazard_rate", "backward_prob"]
-                              fitted_params=["sigmoid_k", "sigmoid_midpoint", "smooth_hazard_rate_lambda_1",
+                              fitted_params=["sigmoid_k", "sigmoid_midpoint", "hazard_rate",
                                             "time_shift"],
                               smoothing_lambda=smoothing_lambda,
                               )
@@ -2526,20 +2525,22 @@ def main(model_number=99, exp_data_number=83, run_test_foward_algorithm=False, r
 
 
 if __name__ == "__main__":
-    # exp_data_number_list = [75]  # [75, 78, 79, 80, 81, 83]
-    # for exp_data_number in exp_data_number_list:
-    #     main(model_number=81, exp_data_number=exp_data_number, run_test_on_data=False, run_gradient_descent=True,
-    #          run_plot_training_loss=False, run_plot_sigmoid=False, run_plot_time_shift_cost=False,
-    #          run_plot_test_loss=False, run_model=False, run_plot_time_shift_test=False,
-    #          run_plot_hazard_rate=False, run_plot_trained_hazard_rate=False, run_benchmark_model=False,
-    #          run_plot_time_shift_training_result=False, run_plot_posterior=False, run_control_model=False,
-    #          run_plot_signal=False, run_plot_trained_posterior=False, run_plot_trained_sigmoid=False,
-    #          run_plot_change_times=False, run_get_model_posterior=False, run_plot_early_stop=False,
-    #          find_best_time_shift=False, blocktype=None, smoothing_lambda=None)
+    exp_data_number_list = [78, 79, 80, 81, 83]  # [75, 78, 79, 80, 81, 83]
+    for exp_data_number in exp_data_number_list:
+        main(model_number=80, exp_data_number=exp_data_number, run_test_on_data=False, run_gradient_descent=True,
+             run_plot_training_loss=False, run_plot_sigmoid=False, run_plot_time_shift_cost=False,
+             run_plot_test_loss=False, run_model=False, run_plot_time_shift_test=False,
+             run_plot_hazard_rate=False, run_plot_trained_hazard_rate=False, run_benchmark_model=False,
+             run_plot_time_shift_training_result=False, run_plot_posterior=False, run_control_model=False,
+             run_plot_signal=False, run_plot_trained_posterior=False, run_plot_trained_sigmoid=False,
+             run_plot_change_times=False, run_get_model_posterior=False, run_plot_early_stop=False,
+             find_best_time_shift=False, blocktype=None, smoothing_lambda=1)
 
-    mouse_number = 75
-    smoothing_lambda_list = [0.1, 0.25, 0.5, 0.75]
-    model_number_list = [81, 82, 83, 84]
-    for model_number, smoothing_lambda in zip(model_number_list, smoothing_lambda_list):
-        main(model_number=model_number, exp_data_number=mouse_number, run_gradient_descent=True,
-             smoothing_lambda=smoothing_lambda)
+    # mouse_number = 75
+    # smoothing_lambda_list = [0.1]
+    # model_number_list = [81]
+    # for model_number, smoothing_lambda in zip(model_number_list, smoothing_lambda_list):
+    #     main(model_number=model_number, exp_data_number=mouse_number, run_gradient_descent=False,
+    #          run_plot_training_loss=False, run_plot_trained_hazard_rate=False, find_best_time_shift=False,
+    #          run_model=True,
+    #          smoothing_lambda=smoothing_lambda)
