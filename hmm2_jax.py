@@ -7,6 +7,8 @@ from jax import grad, jit, vmap
 from jax.experimental import optimizers
 import jax.random as random
 import jax.lax as lax
+import sklearn as skl
+import scipy.stats as scipy_stats
 
 from jax import device_put  # onp operations not transferred to GPU, so they should run faster
 
@@ -14,6 +16,7 @@ from jax import device_put  # onp operations not transferred to GPU, so they sho
 import hmm  # functions to simulate data
 import matplotlib.pyplot as plt
 import scipy.io
+import scipy
 from tqdm import tqdm
 import itertools
 
@@ -1339,7 +1342,7 @@ def test_loss_function(datapath, plot_example=True, savepath=None):
 
 
 def get_hazard_rate(hazard_rate_type="subjective", datapath=None, plot_hazard_rate=False, figsavepath=None,
-                    constant_val=0.001):
+                    constant_val=0.001, binwidth=1, kernel_bandwidth=0.2):
     """
     The way I see it, there are 3 types of varying hazard rate.
     1. "normative": One specified by the experimental design;
@@ -1370,20 +1373,7 @@ def get_hazard_rate(hazard_rate_type="subjective", datapath=None, plot_hazard_ra
     # experimental_hazard_rate = onp.histogram(change_time, range=(0, max_signal_length), bins=max_signal_length)[0]
     # experimental_hazard_rate = experimental_hazard_rate / num_trial
 
-    # experimental hazard rate as defined in Janssen and Shadlen (2005)
-    hazard_rate_hist = onp.histogram(change_time, range=(0, max_signal_length), bins=max_signal_length)[0] \
-                       / float(num_trial)
-    hazard_rate_cumsum = onp.cumsum(hazard_rate_hist, dtype="float64")
-    hazard_rate_cumsum = onp.where(onp.array(hazard_rate_cumsum) > 1, 1, hazard_rate_cumsum)  # cumsum precision
-    experimental_hazard_rate = hazard_rate_hist / (1.0 - hazard_rate_cumsum)
-    experimental_hazard_rate = onp.where(~onp.isfinite(experimental_hazard_rate), 1,
-                                         experimental_hazard_rate)  # remove divide by zero Inf/NaN
-    experimental_hazard_rate = onp.where(experimental_hazard_rate > 1, 1,
-                                         experimental_hazard_rate)
 
-    # log implementation of the hazard rate
-    # log_experimenetal_hazard_rate = np.log(hazard_rate_hist) - np.log(1 - hazard_rate_cumsum)
-    # experimental_hazard_rate = log_experimenetal_hazard_rate # np.exp(log_experimenetal_hazard_rate)
 
 
     if hazard_rate_type == "subjective":
@@ -1404,7 +1394,30 @@ def get_hazard_rate(hazard_rate_type="subjective", datapath=None, plot_hazard_ra
         hazard_rate_vec = subjective_hazard_rate
 
     elif hazard_rate_type == "experimental":
+        # experimental hazard rate as defined in Janssen and Shadlen (2005)
+        hazard_rate_hist = onp.histogram(change_time, range=(0, max_signal_length), bins=max_signal_length)[0] \
+                           / float(num_trial)
+        hazard_rate_cumsum = onp.cumsum(hazard_rate_hist, dtype="float64")
+        hazard_rate_cumsum = onp.where(onp.array(hazard_rate_cumsum) > 1, 1, hazard_rate_cumsum)  # cumsum precision
+
+        # naive implementatation of getting the hazard rate (underflow problems likely)
+        experimental_hazard_rate = hazard_rate_hist / (1.0 - hazard_rate_cumsum)
+        experimental_hazard_rate = onp.where(~onp.isfinite(experimental_hazard_rate), 1,
+                                             experimental_hazard_rate)  # remove divide by zero Inf/NaN
+        experimental_hazard_rate = onp.where(experimental_hazard_rate > 1, 1,
+                                             experimental_hazard_rate)
         hazard_rate_vec = experimental_hazard_rate
+    elif hazard_rate_type == "experimental_log_method":
+        # log implementation of the hazard rate (should in theory be the same as experimental, but may
+        # deal with underflow)
+        hazard_rate_hist = onp.histogram(change_time, range=(0, max_signal_length), bins=max_signal_length)[0] \
+                           / float(num_trial)
+        hazard_rate_cumsum = onp.cumsum(hazard_rate_hist, dtype="float64")
+        hazard_rate_cumsum = onp.where(onp.array(hazard_rate_cumsum) > 1, 1, hazard_rate_cumsum)  # cumsum precision
+        log_experimental_hazard_rate = np.log(hazard_rate_hist) - np.log1p(-hazard_rate_cumsum)
+        hazard_rate_vec = np.exp(log_experimental_hazard_rate)
+    elif hazard_rate_type == "experimental_remove_FA":
+        pass # TODO
     elif hazard_rate_type == "normative":
         pass
     elif hazard_rate_type == "constant":
@@ -1414,9 +1427,44 @@ def get_hazard_rate(hazard_rate_type="subjective", datapath=None, plot_hazard_ra
         hazard_rate_vec = onp.random.normal(loc=0.0, scale=0.5, size=(max_signal_length, ))
         hazard_rate_vec = standard_sigmoid(hazard_rate_vec)
     elif hazard_rate_type == "experimental_instantaneous":
-        hazard_rate_hist = onp.histogram(change_time, range=(0, max_signal_length), bins=max_signal_length)[0] \
+        hazard_rate_hist = onp.histogram(change_time, range=(0, max_signal_length), bins=onp.int(max_signal_length / binwidth))[0] \
                            / float(num_trial)
         hazard_rate_vec = hazard_rate_hist
+    elif hazard_rate_type == "experimental_instantaneous_blurred":
+        hazard_rate_hist = onp.histogram(change_time, range=(0, max_signal_length), bins=onp.int(max_signal_length / binwidth))[0] \
+                           / float(num_trial)
+        hazard_rate_vec = hazard_rate_hist
+        # Blur probability density function f(t) with a Gaussian whose std is proportional to elapsed time
+        # as described in Janssen and Shadlen 2005
+        blur_phi = 0.26
+        scale_factor = 2.03  # some factor they used to scale all graphs so that they range from 0 to 1 (phi)
+
+        # def normal_exp_part(tau, f_t, t, scale_factor):
+        #     return f_t * onp.exp(-(tau - t)**2 / (2 * scale_factor**2 * t**2))
+        #
+        # subjective_hazard_rate_store = list()
+        # for t in np.arange(1, len(hazard_rate_vec)):  # time starts at 1 for the equation
+        #     subjective_hazard_rate = 1 / (blur_phi * t * np.sqrt(2 * np.pi)) * scipy.integrate.quad(normal_exp_part,
+        #                               -onp.inf, onp.inf, args=(hazard_rate_vec[t-1], t, scale_factor))[0]
+        #     subjective_hazard_rate_store.append(subjective_hazard_rate)
+        # hazard_rate_vec = subjective_hazard_rate_store
+
+        # TODO: discrete version
+
+
+
+    elif hazard_rate_type == "experimental_instantaneous_kde":
+        # hazard_rate_hist = onp.histogram(change_time, range=(0, max_signal_length), bins=onp.int(max_signal_length / binwidth))[0] \
+        #                    / float(num_trial)
+        # hazard_rate_vec = hazard_rate_hist
+        # change_time_pre_binned = onp.histogram(change_time, range=(0, max_sign))
+        kde_model = skl.neighbors.kde.KernelDensity(kernel="gaussian", bandwidth=kernel_bandwidth).fit(
+             change_time.reshape(-1, 1))
+        hazard_rate_vec = np.exp(kde_model.score_samples(np.linspace(0, max_signal_length, 1000).reshape(-1, 1)))  # model returns log density
+
+        # kde_model = scipy_stats.gaussian_kde(change_time)
+        # hazard_rate_vec = kde_model.evaluate(np.linspace(0, max_signal_length, 1000))
+
     if plot_hazard_rate is True:
         fig, ax = plt.subplots(1, 1, figsize=(8, 6))
         # ax.plot(subjective_hazard_rate, label="Subjective hazard rate")
@@ -2261,9 +2309,9 @@ def main(model_number=99, exp_data_number=83, run_test_foward_algorithm=False, r
     if blocktype is None:
         datapath = os.path.join(main_folder, "exp_data/subsetted_data/data_IO_0" + str(exp_data_number) + ".pkl")
     elif blocktype == "early":
-        datapath = os.path.join(main_folder, "exp_data/subsetted_data/data_IO_0" + str(exp_data_number) + "_early_blocks" ".pkl")
+        datapath = os.path.join(main_folder, "exp_data/subsetted_data/data_IO_0" + str(exp_data_number) + "_early_blocks" + ".pkl")
     elif blocktype == "late":
-        datapath = os.path.join(main_folder, "exp_data/subsetted_data/data_IO_0" + str(exp_data_number) + "_late_blocks" ".pkl")
+        datapath = os.path.join(main_folder, "exp_data/subsetted_data/data_IO_0" + str(exp_data_number) + "_late_blocks" + ".pkl")
 
     model_save_path = os.path.join(main_folder, "hmm_data/model_response_0" + str(exp_data_number) + "_"
                                    + str(model_number) + ".pkl")
@@ -2411,17 +2459,56 @@ def main(model_number=99, exp_data_number=83, run_test_foward_algorithm=False, r
         fig.set_size_inches(8, 4)
         fig.savefig(figsavepath)
 
-        # compare mouse and model
-        figsavepath = os.path.join(main_folder, "figures/hazard_rate_comparison_model_" + str(model_number) + "_mouse_"
-                                   + str(exp_data_number))
+        # compare blurred and non-blurred hazard rate (TEMP BLOCK FOR TESTING gaussian blur)
+        binwidth = 2 # width of window to calculate the hazard rate (default is each frame)
+                      # note that this won't be exact because num_bins = int(max_signal_length / binwidth)
+        figsavepath = os.path.join(main_folder, "figures/hazard_rate_comparison_blur_test_model_" + str(model_number) + "_mouse_"
+                                   + str(exp_data_number) + "binwidth_" + str(binwidth))
         fig, ax = nmt_plot.plot_trained_hazard_rate(training_savepath, sigmoid_function, num_non_hazard_rate_param=2,
                                                     constant_hazard_rate=False, max_signal_length=max_signal_length)
-        mouse_hazard_rate, _ = get_hazard_rate(hazard_rate_type="experimental_instantaneous", datapath=datapath,
-                                               plot_hazard_rate=False,
-                        figsavepath=None)
-        ax.plot(mouse_hazard_rate)
+        mouse_hazard_rate, _ = get_hazard_rate(hazard_rate_type="experimental_instantaneous_blurred", datapath=datapath,
+                                               plot_hazard_rate=False, binwidth=binwidth,
+                                             figsavepath=None)
+        x_original = np.arange(0, max_signal_length)
+        x_binned = np.linspace(0, max_signal_length, max_signal_length/binwidth)
+        ax.plot(x_binned, mouse_hazard_rate)
         ax.legend(["Model", "Mouse"])
         fig.savefig(figsavepath)
+
+        # compare mouse and model
+        # binwidth = 40 # width of window to calculate the hazard rate (default is each frame)
+        #               # note that this won't be exact because num_bins = int(max_signal_length / binwidth)
+        # figsavepath = os.path.join(main_folder, "figures/hazard_rate_comparison_model_" + str(model_number) + "_mouse_"
+        #                            + str(exp_data_number) + "binwidth_" + str(binwidth))
+        # fig, ax = nmt_plot.plot_trained_hazard_rate(training_savepath, sigmoid_function, num_non_hazard_rate_param=2,
+        #                                             constant_hazard_rate=False, max_signal_length=max_signal_length)
+        # mouse_hazard_rate, _ = get_hazard_rate(hazard_rate_type="experimental_instantaneous", datapath=datapath,
+        #                                        plot_hazard_rate=False, binwidth=binwidth,
+        #                                      figsavepath=None)
+        # x_original = np.arange(0, max_signal_length)
+        # x_binned = np.linspace(0, max_signal_length, max_signal_length/binwidth)
+        # ax.plot(x_binned, mouse_hazard_rate)
+        # ax.legend(["Model", "Mouse"])
+        # fig.savefig(figsavepath)
+        #
+        # # same thing but with kde smoothing
+        # kernel_bandwidth = 100
+        # biwidth = 20
+        # figsavepath = os.path.join(main_folder, "figures/hazard_rate_comparison_model_" + str(model_number) + "_mouse_"
+        #                            + str(exp_data_number) + "_binwidth_" + str(binwidth) +
+        #                            "kernel_bandwidth" + str(kernel_bandwidth).replace(".", "p"))
+        # fig, ax = nmt_plot.plot_trained_hazard_rate(training_savepath, sigmoid_function, num_non_hazard_rate_param=2,
+        #                                             constant_hazard_rate=False, max_signal_length=max_signal_length)
+        # mouse_hazard_rate, _ = get_hazard_rate(hazard_rate_type="experimental_instantaneous_kde", datapath=datapath,
+        #                                        plot_hazard_rate=False, binwidth=binwidth, kernel_bandwidth=kernel_bandwidth,
+        #                                      figsavepath=None)
+        # # x_original = np.arange(0, max_signal_length)
+        # num_kde_vals = 1000 # number of values between 0 and max_signal_length to get from the 1000
+        # x_binned = np.linspace(0, max_signal_length, num_kde_vals)
+        # ax.plot(x_binned, mouse_hazard_rate)
+        # ax.legend(["Model", "Mouse"])
+        # fig.savefig(figsavepath)
+
 
 
     if run_plot_time_shift_test is True:
@@ -2429,24 +2516,22 @@ def main(model_number=99, exp_data_number=83, run_test_foward_algorithm=False, r
             nmt_plot.plot_time_shift_test(datapath, param=[10, 0.5], time_shift_list=[0, -10], trial_num=trial_num)
 
     if run_plot_hazard_rate is True:
-        figsavepath = os.path.join(main_folder, "figures/hazard_rate_subjective_mouse_early_block" + str(exp_data_number) + ".png")
+        figsavepath = os.path.join(main_folder, "figures/hazard_rate_mouse" + str(exp_data_number) + ".png")
         # get_hazard_rate(hazard_rate_type="subjective", datapath=datapath, plot_hazard_rate=True,
         #                  figsavepath=figsavepath)
 
-        mouse_hazard_rate, _ = get_hazard_rate(hazard_rate_type="experimental", datapath=datapath,
-                                               plot_hazard_rate=True,
+        mouse_hazard_rate_experimental, _ = get_hazard_rate(hazard_rate_type="experimental", datapath=datapath,
+                                               plot_hazard_rate=False,
                         figsavepath=figsavepath)
-
-
-
-
-        # model_hazard_rate = get_trained_hazard_rate(training_savepath, num_non_hazard_rate_param=6,
-        #                                             epoch_num=348, param_process_method="sigmoid")
-        # model_hazard_rate = model_hazard_rate[6:-11]  # remove the time-shifted bits at the end
-        # plt.plot(model_hazard_rate)
-        # fig = nmt_plot.compare_model_mouse_hazard_rate(model_hazard_rate, mouse_hazard_rate,
-        #                                                scale_method="sum")
-        # plt.show()
+        mouse_hazard_rate_log_method, _ = get_hazard_rate(hazard_rate_type="experimental_log_method", datapath=datapath,
+                                               plot_hazard_rate=False,
+                        figsavepath=figsavepath)
+        plt.style.use(stylesheet_path)
+        fig, ax = plt.subplots(figsize=(8, 4))
+        ax.plot(mouse_hazard_rate_experimental, label='Experiment hazard rate')
+        ax.plot(mouse_hazard_rate_log_method, label='Experiment hazard rate with log method')
+        ax.legend(frameon=False)
+        fig.savefig(figsavepath)
 
     if run_benchmark_model is True:
         figsavepath = os.path.join(main_folder, "figures/loss_benchmark_model_" + str(model_number) + ".png")
@@ -2530,14 +2615,14 @@ def main(model_number=99, exp_data_number=83, run_test_foward_algorithm=False, r
 if __name__ == "__main__":
     exp_data_number_list = [75]  # [75, 78, 79, 80, 81, 83]
     for exp_data_number in exp_data_number_list:
-        main(model_number=80, exp_data_number=exp_data_number, run_test_on_data=False, run_gradient_descent=False,
+        main(model_number=84, exp_data_number=exp_data_number, run_test_on_data=False, run_gradient_descent=False,
              run_plot_training_loss=False, run_plot_sigmoid=False, run_plot_time_shift_cost=False,
              run_plot_test_loss=False, run_model=False, run_plot_time_shift_test=False,
-             run_plot_hazard_rate=False, run_plot_trained_hazard_rate=True, run_benchmark_model=False,
+             run_plot_hazard_rate=True, run_plot_trained_hazard_rate=False, run_benchmark_model=False,
              run_plot_time_shift_training_result=False, run_plot_posterior=False, run_control_model=False,
              run_plot_signal=False, run_plot_trained_posterior=False, run_plot_trained_sigmoid=False,
              run_plot_change_times=False, run_get_model_posterior=False, run_plot_early_stop=False,
-             find_best_time_shift=False, blocktype=None, smoothing_lambda=1)
+             find_best_time_shift=False, blocktype="early", smoothing_lambda=1)
 
     # mouse_number = 75
     # smoothing_lambda_list = [0.1]
