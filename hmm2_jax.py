@@ -1414,10 +1414,22 @@ def get_hazard_rate(hazard_rate_type="subjective", datapath=None, plot_hazard_ra
                            / float(num_trial)
         hazard_rate_cumsum = onp.cumsum(hazard_rate_hist, dtype="float64")
         hazard_rate_cumsum = onp.where(onp.array(hazard_rate_cumsum) > 1, 1, hazard_rate_cumsum)  # cumsum precision
-        log_experimental_hazard_rate = np.log(hazard_rate_hist) - np.log1p(-hazard_rate_cumsum)
-        hazard_rate_vec = np.exp(log_experimental_hazard_rate)
+        log_experimental_hazard_rate = onp.log(hazard_rate_hist) - onp.log1p(-hazard_rate_cumsum)
+        hazard_rate_vec = onp.exp(log_experimental_hazard_rate)
+        # make values after maximal change time 0, because p(change|previous_no_change) will be zero at this point
+        hazard_rate_vec[max(change_time):] = 0
     elif hazard_rate_type == "experimental_remove_FA":
-        pass # TODO
+        outcome = exp_data["outcome"].flatten()
+        hit_index = onp.where(outcome == "Hit")[0]
+        change_hist = onp.histogram(change_time[hit_index], range=(0, max_signal_length), bins=max_signal_length)[0] \
+                           / len(hit_index)
+        hazard_rate_cumsum = onp.cumsum(change_hist, dtype="float64")
+        hazard_rate_cumsum = onp.where(onp.array(hazard_rate_cumsum) > 1, 1, hazard_rate_cumsum)  # cumsum precision
+        log_experimental_hazard_rate = np.log(change_hist) - np.log1p(-hazard_rate_cumsum)
+        hazard_rate_vec = onp.exp(log_experimental_hazard_rate)
+        # convert nan and inf to 0 (they are most likely due to underflow after the max(change_time), but use w/ caution
+        hazard_rate_vec = onp.where(~onp.isfinite(hazard_rate_vec), 0,
+                                             hazard_rate_vec)
     elif hazard_rate_type == "normative":
         pass
     elif hazard_rate_type == "constant":
@@ -1430,10 +1442,10 @@ def get_hazard_rate(hazard_rate_type="subjective", datapath=None, plot_hazard_ra
         hazard_rate_hist = onp.histogram(change_time, range=(0, max_signal_length), bins=onp.int(max_signal_length / binwidth))[0] \
                            / float(num_trial)
         hazard_rate_vec = hazard_rate_hist
-    elif hazard_rate_type == "experimental_instantaneous_blurred":
-        hazard_rate_hist = onp.histogram(change_time, range=(0, max_signal_length), bins=onp.int(max_signal_length / binwidth))[0] \
+    elif hazard_rate_type == "experimental_blurred":
+        change_time_hist = onp.histogram(change_time, range=(0, max_signal_length), bins=onp.int(max_signal_length / binwidth))[0] \
                            / float(num_trial)
-        hazard_rate_vec = hazard_rate_hist
+        # hazard_rate_vec = hazard_rate_hist
         # Blur probability density function f(t) with a Gaussian whose std is proportional to elapsed time
         # as described in Janssen and Shadlen 2005
         blur_phi = 0.26
@@ -1450,8 +1462,20 @@ def get_hazard_rate(hazard_rate_type="subjective", datapath=None, plot_hazard_ra
         # hazard_rate_vec = subjective_hazard_rate_store
 
         # TODO: discrete version
+        # For every time point t, we multiply the entire hazard rate vector (function) by a Gaussian with mean t
+        # and standard deviation phi * t
+        blurred_hazard_rate_vec = np.zeros(shape=(len(change_time_list), ))
+        for t in np.arange(1, len(change_time_hist)): # not the 1-indexing to not divide by zero
+            gaussian_mean = t
+            gaussian_variance = blur_phi * t
+            blurred_hazard_rate_vec[t-1] = blurred_hazard_rate_vec * 1 / (onp.sqrt(2 * onp.pi * onp.blur_phi)) * \
+                                           np.exp()
 
 
+    elif hazard_rate_type == "experimental_remove_FA_blurred":
+
+        # TODO
+        None
 
     elif hazard_rate_type == "experimental_instantaneous_kde":
         # hazard_rate_hist = onp.histogram(change_time, range=(0, max_signal_length), bins=onp.int(max_signal_length / binwidth))[0] \
@@ -1776,7 +1800,8 @@ def gradient_descent_w_cv(exp_data_path, training_savepath, init_param_vals=np.a
                                    time_shift_list=np.arange(0, 5), num_epoch=10, fit_hazard_rate=True,
                                    cv_random_seed=None,
                                    n_params=2, batch_size=None,
-                                   fitted_params=None, patience_threshold=2, smoothing_lambda=0):
+                                   fitted_params=None, patience_threshold=2, smoothing_lambda=0,
+                          blocktype="all"):
     """
     Runs gradient descent to optimise parameters of the HMM to fit behavioural results with cross validation.
     :param exp_data_path: path to file containing the experimental data
@@ -1790,9 +1815,11 @@ def gradient_descent_w_cv(exp_data_path, training_savepath, init_param_vals=np.a
     :param batch_size: size of batch for minibatch gradient descent, if None, then the entire batch is used
     :param smoothing_lmabda: penalty term magnitude for smoothing the hazard rate
     :param fitted_params: (optional) list containing the names of the listed parameters, useful for model comparison
+    :param blocktype: information about subset criteria for experimental data (eg. early vs. late blocks)
     :return:
     """
     # TODO: remove the globals
+    # TODO: save information about the parameters used for constrained optimisation (sigmoid, log methods)
     global num_non_hazard_rate_params
     num_non_hazard_rate_params = n_params
 
@@ -1996,6 +2023,7 @@ def gradient_descent_w_cv(exp_data_path, training_savepath, init_param_vals=np.a
     training_result["test_indices"] = test_indices
     training_result["cv_random_seed"] = cv_random_seed
     training_result["smoothing_lambda"] = smoothing_lambda
+    training_result["blocktype"] = blocktype
 
     if fitted_params is not None:
         training_result["fitted_params"] = fitted_params
@@ -2298,7 +2326,7 @@ def main(model_number=99, exp_data_number=83, run_test_foward_algorithm=False, r
          run_benchmark_model=False, run_plot_time_shift_training_result=False, run_plot_posterior=False, run_control_model=False,
          run_plot_signal=False, run_plot_trained_posterior=False, run_plot_trained_sigmoid=False, run_plot_time_shift_cost=False,
          run_plot_change_times=False, run_get_model_posterior=False, run_plot_early_stop=False, find_best_time_shift=False,
-         blocktype=None, smoothing_lambda=None):
+         blocktype="all", smoothing_lambda=None):
     home = expanduser("~")
     print("Running model: ", str(model_number))
     print("Using mouse: ", str(exp_data_number))
@@ -2306,7 +2334,7 @@ def main(model_number=99, exp_data_number=83, run_test_foward_algorithm=False, r
     # datapath = "/media/timothysit/180C-2DDD/second_rotation_project/exp_data/subsetted_data/data_IO_083.pkl"
     main_folder = os.path.join(home, "Dropbox/notes/Projects/second_rotation_project/normative_model")
     # TODO: generalise the code below
-    if blocktype is None:
+    if blocktype == "all":
         datapath = os.path.join(main_folder, "exp_data/subsetted_data/data_IO_0" + str(exp_data_number) + ".pkl")
     elif blocktype == "early":
         datapath = os.path.join(main_folder, "exp_data/subsetted_data/data_IO_0" + str(exp_data_number) + "_early_blocks" + ".pkl")
@@ -2371,6 +2399,7 @@ def main(model_number=99, exp_data_number=83, run_test_foward_algorithm=False, r
                               fitted_params=["sigmoid_k", "sigmoid_midpoint", "hazard_rate",
                                             "time_shift"],
                               smoothing_lambda=smoothing_lambda,
+                              blocktype=blocktype,
                               )
 
 
@@ -2460,19 +2489,19 @@ def main(model_number=99, exp_data_number=83, run_test_foward_algorithm=False, r
         fig.savefig(figsavepath)
 
         # compare blurred and non-blurred hazard rate (TEMP BLOCK FOR TESTING gaussian blur)
-        binwidth = 2 # width of window to calculate the hazard rate (default is each frame)
+        binwidth = 1 # width of window to calculate the hazard rate (default is each frame)
                       # note that this won't be exact because num_bins = int(max_signal_length / binwidth)
         figsavepath = os.path.join(main_folder, "figures/hazard_rate_comparison_blur_test_model_" + str(model_number) + "_mouse_"
                                    + str(exp_data_number) + "binwidth_" + str(binwidth))
         fig, ax = nmt_plot.plot_trained_hazard_rate(training_savepath, sigmoid_function, num_non_hazard_rate_param=2,
                                                     constant_hazard_rate=False, max_signal_length=max_signal_length)
-        mouse_hazard_rate, _ = get_hazard_rate(hazard_rate_type="experimental_instantaneous_blurred", datapath=datapath,
+        mouse_hazard_rate, _ = get_hazard_rate(hazard_rate_type="experimental_remove_FA", datapath=datapath,
                                                plot_hazard_rate=False, binwidth=binwidth,
                                              figsavepath=None)
         x_original = np.arange(0, max_signal_length)
         x_binned = np.linspace(0, max_signal_length, max_signal_length/binwidth)
         ax.plot(x_binned, mouse_hazard_rate)
-        ax.legend(["Model", "Mouse"])
+        ax.legend(["Model", "Mouse (FA removed)"])
         fig.savefig(figsavepath)
 
         # compare mouse and model
@@ -2526,11 +2555,16 @@ def main(model_number=99, exp_data_number=83, run_test_foward_algorithm=False, r
         mouse_hazard_rate_log_method, _ = get_hazard_rate(hazard_rate_type="experimental_log_method", datapath=datapath,
                                                plot_hazard_rate=False,
                         figsavepath=figsavepath)
+        mouse_hazard_rate_FA_removed, _ = get_hazard_rate(hazard_rate_type="experimental_remove_FA", datapath=datapath,
+                                               plot_hazard_rate=False,
+                        figsavepath=figsavepath)
         plt.style.use(stylesheet_path)
         fig, ax = plt.subplots(figsize=(8, 4))
         ax.plot(mouse_hazard_rate_experimental, label='Experiment hazard rate')
         ax.plot(mouse_hazard_rate_log_method, label='Experiment hazard rate with log method')
+        ax.plot(mouse_hazard_rate_FA_removed, label='Experiment hazard rate with FA removed')
         ax.legend(frameon=False)
+        ax.grid()
         fig.savefig(figsavepath)
 
     if run_benchmark_model is True:
@@ -2613,16 +2647,16 @@ def main(model_number=99, exp_data_number=83, run_test_foward_algorithm=False, r
 
 
 if __name__ == "__main__":
-    exp_data_number_list = [75]  # [75, 78, 79, 80, 81, 83]
+    exp_data_number_list = [75, 78, 79, 80, 81, 83]  # [75, 78, 79, 80, 81, 83]
     for exp_data_number in exp_data_number_list:
-        main(model_number=84, exp_data_number=exp_data_number, run_test_on_data=False, run_gradient_descent=False,
+        main(model_number=80, exp_data_number=exp_data_number, run_test_on_data=False, run_gradient_descent=True,
              run_plot_training_loss=False, run_plot_sigmoid=False, run_plot_time_shift_cost=False,
              run_plot_test_loss=False, run_model=False, run_plot_time_shift_test=False,
-             run_plot_hazard_rate=True, run_plot_trained_hazard_rate=False, run_benchmark_model=False,
+             run_plot_hazard_rate=False, run_plot_trained_hazard_rate=False, run_benchmark_model=False,
              run_plot_time_shift_training_result=False, run_plot_posterior=False, run_control_model=False,
              run_plot_signal=False, run_plot_trained_posterior=False, run_plot_trained_sigmoid=False,
              run_plot_change_times=False, run_get_model_posterior=False, run_plot_early_stop=False,
-             find_best_time_shift=False, blocktype="early", smoothing_lambda=1)
+             find_best_time_shift=False, blocktype="all", smoothing_lambda=1)
 
     # mouse_number = 75
     # smoothing_lambda_list = [0.1]
